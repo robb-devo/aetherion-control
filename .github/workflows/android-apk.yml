@@ -130,16 +130,14 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      # v3's default package list is "tools platform-tools". `tools` is gone from
+      # the SDK repo, and a YAML `|` block is passed to sdkmanager as one name
+      # including the trailing newline. An empty list only accepts licenses
+      # and sets ANDROID_HOME. The next step installs the real packages.
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
-          packages: |
-            platform-tools
-            cmdline-tools;latest
-            build-tools;35.0.0
-            platforms;android-35
-            ndk;27.1.12297006
-            cmake;3.22.1
+          packages: ''
 
       # Versions match the Expo SDK 57 / React Native 0.86 catalog
       # (compileSdk 36, build-tools 36.0.0, NDK 27.1.12297006).
@@ -147,6 +145,7 @@ jobs:
         run: |
           set -euo pipefail
           sdkmanager --install \
+            "platform-tools" \
             "platforms;android-36" \
             "build-tools;36.0.0" \
             "ndk;27.1.12297006" \
