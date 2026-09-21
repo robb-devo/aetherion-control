@@ -2,7 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Haptics from 'expo-haptics';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { Alert } from 'react-native';
-import { runCraftyServerAction, sendCraftyServerCommand, listCraftyServers, getCraftyServerStats, type CraftyActionRequestAction, type CraftyServer, type CraftyStats } from '@workspace/api-client-react';
+import { runCraftyServerAction, sendCraftyServerCommand, listCraftyServers, getCraftyServerStats, getCraftyServerLogs, type CraftyActionRequestAction, type CraftyServer, type CraftyStats } from '@workspace/api-client-react';
 import { useControlAuth } from '@/context/ControlAuth';
 
 export type ServerStatus = 'online' | 'degraded' | 'offline' | 'restarting';
@@ -47,6 +47,8 @@ type ServerContextValue = {
   setConsoleTargetId: (id: string) => void;
   refresh: () => Promise<void>;
   restartServer: (id: string) => void;
+  restartProxy: () => void;
+  backupNow: () => void;
   runCommand: (command: string) => void;
   clearAction: () => void;
 };
@@ -134,7 +136,7 @@ export function ServerProvider({ children }: { children: React.ReactNode }) {
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : 'Crafty could not be reached.';
       setError(message);
-      setLastAction('Crafty-Verbindung konnte nicht geladen werden');
+      setLastAction('Could not load Crafty connection');
     } finally {
       setIsLoading(false);
     }
@@ -155,8 +157,47 @@ export function ServerProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!isHydrated) return;
-    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ lines })).catch(() => undefined);
+    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ lines: lines.slice(0, 30) })).catch(() => undefined);
   }, [isHydrated, lines]);
+
+  useEffect(() => {
+    if (!isUnlocked || !consoleTargetId) return undefined;
+    let cancelled = false;
+    const pull = async () => {
+      try {
+        const response = await getCraftyServerLogs(consoleTargetId);
+        if (cancelled) return;
+        const mapped = (response.lines ?? [])
+          .slice(-48)
+          .reverse()
+          .map((text, index) => ({
+            id: `log-${consoleTargetId}-${index}-${text.slice(0, 18)}`,
+            time: nowLabel(),
+            tone: /error|exception|severe/i.test(text)
+              ? ('error' as const)
+              : /warn/i.test(text)
+                ? ('warning' as const)
+                : /done|success|joined/i.test(text)
+                  ? ('success' as const)
+                  : ('normal' as const),
+            text,
+          }));
+        if (!mapped.length) return;
+        setLines((current) => {
+          const commands = current.filter((line) => line.text.startsWith('> ')).slice(0, 6);
+          return [...commands, ...mapped].slice(0, 60);
+        });
+      } catch {
+        // keep local activity if logs endpoint is briefly unavailable
+      }
+    };
+    void pull();
+    const timer = setInterval(() => void pull(), 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [consoleTargetId, isUnlocked]);
 
   const restartServer = (id: string) => {
     const server = servers.find((item) => item.id === id);
@@ -173,7 +214,7 @@ export function ServerProvider({ children }: { children: React.ReactNode }) {
             void (async () => {
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => undefined);
               setServers((current) => current.map((item) => item.id === id ? { ...item, status: 'restarting' } : item));
-              setLastAction(`${server.name} wird neu gestartet`);
+              setLastAction(`Restarting ${server.name}…`);
               setLines((current) => [{ id: `${Date.now()}-restart`, time: nowLabel(), tone: 'warning' as const, text: `Restart requested for ${server.name}` }, ...current].slice(0, 20));
               try {
                 await runCraftyServerAction(id, { action: 'restart_server' satisfies CraftyActionRequestAction });
@@ -189,6 +230,58 @@ export function ServerProvider({ children }: { children: React.ReactNode }) {
     );
   };
 
+  const restartProxy = () => {
+    const proxy =
+      servers.find((server) => server.tag === 'EDGE') ??
+      servers.find((server) => /proxy|velocity/i.test(server.name));
+    if (!proxy) {
+      Alert.alert('No proxy', 'No Velocity/proxy server found in Crafty.');
+      return;
+    }
+    restartServer(proxy.id);
+  };
+
+  const backupNow = () => {
+    const targets = servers.filter(
+      (server) => server.tag === 'PLAY' || /mmo|hub/i.test(server.name),
+    );
+    const list = targets.length ? targets : servers;
+    if (!list.length) {
+      Alert.alert('No servers', 'Crafty did not return any servers for backup.');
+      return;
+    }
+    Alert.alert(
+      'Backup now?',
+      `Crafty will create backups for:\n${list.map((server) => `• ${server.name}`).join('\n')}`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Backup',
+          onPress: () => {
+            void (async () => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => undefined);
+              setLastAction('Creating backups…');
+              const results: string[] = [];
+              for (const server of list) {
+                try {
+                  await runCraftyServerAction(server.id, { action: 'backup_server' satisfies CraftyActionRequestAction });
+                  results.push(`✓ ${server.name}`);
+                } catch (cause) {
+                  results.push(`✗ ${server.name}: ${cause instanceof Error ? cause.message : 'failed'}`);
+                }
+              }
+              setLastAction(`Backup done · ${results.filter((item) => item.startsWith('✓')).length}/${list.length} ok`);
+              setLines((current) => [
+                { id: `${Date.now()}-backup`, time: nowLabel(), tone: 'success' as const, text: `Backup · ${results.join(' · ')}` },
+                ...current,
+              ].slice(0, 40));
+            })();
+          },
+        },
+      ],
+    );
+  };
+
   const runCommand = (command: string) => {
     const trimmed = command.trim();
     const target = servers.find((server) => server.id === consoleTargetId) ?? servers[0];
@@ -196,7 +289,7 @@ export function ServerProvider({ children }: { children: React.ReactNode }) {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => undefined);
     setLines((current) => [{ id: `${Date.now()}-command`, time: nowLabel(), tone: 'normal' as const, text: `> [${target.name}] ${trimmed}` }, ...current].slice(0, 40));
     void sendCraftyServerCommand(target.id, { command: trimmed })
-      .then(() => setLastAction(`Befehl an ${target.name} gesendet`))
+      .then(() => setLastAction(`Command sent to ${target.name}`))
       .catch((cause) => setLastAction(cause instanceof Error ? cause.message : 'Command failed'));
   };
 
@@ -212,6 +305,8 @@ export function ServerProvider({ children }: { children: React.ReactNode }) {
       setConsoleTargetId,
       refresh,
       restartServer,
+      restartProxy,
+      backupNow,
       runCommand,
       clearAction: () => setLastAction(null),
     }),

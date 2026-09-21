@@ -1,8 +1,7 @@
 import { Feather } from '@expo/vector-icons';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import { Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   getGetCraftyServerLogsQueryKey,
   getGetCraftyServerStatsQueryKey,
@@ -23,6 +22,8 @@ import {
 } from '@workspace/api-client-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Chip, MetricBar, PrimaryButton, uiStyles } from '@/components/ControlUI';
+import { CrystalWaveHeader } from '@/components/CrystalWaveHeader';
+import { PlayerDevSheet } from '@/components/PlayerDevSheet';
 import { useServerControl } from '@/context/ServerContext';
 import { useColors } from '@/hooks/useColors';
 
@@ -30,7 +31,7 @@ type Tab = 'Overview' | 'Players' | 'Logs' | 'Files' | 'Plugins' | 'Backups';
 
 export default function ServerScreen() {
   const colors = useColors();
-  const insets = useSafeAreaInsets();
+  const router = useRouter();
   const queryClient = useQueryClient();
   const params = useLocalSearchParams<{ id: string }>();
   const id = Array.isArray(params.id) ? params.id[0] : params.id;
@@ -42,6 +43,7 @@ export default function ServerScreen() {
   const [files, setFiles] = useState<CraftyFileResponse | null>(null);
   const [fileContent, setFileContent] = useState('');
   const [fileError, setFileError] = useState<string | null>(null);
+  const [selectedPlayer, setSelectedPlayer] = useState<string | null>(null);
   const stats = useGetCraftyServerStats(id, { query: { queryKey: getGetCraftyServerStatsQueryKey(id), refetchInterval: 10000 } });
   const logs = useGetCraftyServerLogs(id, { query: { queryKey: getGetCraftyServerLogsQueryKey(id), enabled: tab === 'Logs', refetchInterval: 5000 } });
   const plugins = useListCraftyServerPlugins(id, { query: { queryKey: getListCraftyServerPluginsQueryKey(id), enabled: tab === 'Plugins' } });
@@ -103,19 +105,37 @@ export default function ServerScreen() {
   const tabs: Tab[] = ['Overview', 'Players', 'Logs', 'Files', 'Plugins', 'Backups'];
   return (
     <View style={[uiStyles.screen, { backgroundColor: colors.background }]}>
-      <ScrollView refreshControl={<RefreshControl refreshing={loading} onRefresh={() => void refresh()} tintColor={colors.primary} />} contentContainerStyle={[uiStyles.scroll, { paddingTop: insets.top + 14 }]}>
-        <Text style={[styles.kicker, { color: colors.primary }]}>SERVER CONTROL</Text>
-        <View style={styles.titleRow}><View style={{ flex: 1 }}><Text style={[styles.title, { color: colors.foreground }]}>{title}</Text><Text style={[styles.subtitle, { color: colors.mutedForeground }]}>{server?.ip ?? id}</Text></View><View style={[styles.liveDot, { backgroundColor: stats.data?.running ? colors.success : colors.destructive }]} /></View>
+      <ScrollView refreshControl={<RefreshControl refreshing={loading} onRefresh={() => void refresh()} tintColor={colors.primary} />} contentContainerStyle={[uiStyles.scroll, { paddingTop: 0 }]}>
+        <CrystalWaveHeader
+          variant="server"
+          toneKey={server?.name ?? id}
+          kicker="SERVER CONTROL"
+          subtitle={server?.ip ?? id}
+          name={title}
+          onBack={() => router.back()}
+          trailing={
+            <View style={[styles.liveDotLg, { backgroundColor: stats.data?.running ? colors.success : colors.destructive, borderColor: 'rgba(255,255,255,0.25)' }]} />
+          }
+        />
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabs}>{tabs.map((item) => <Chip key={item} label={item} active={tab === item} onPress={() => setTab(item)} />)}</ScrollView>
         {actionLabel ? <View style={[styles.notice, { backgroundColor: colors.accent }]}><Text style={[styles.noticeText, { color: colors.accentForeground }]}>{actionLabel} in progress…</Text></View> : null}
         {action.error ? <Text style={[styles.error, { color: colors.destructive }]}>{action.error.message}</Text> : null}
         {tab === 'Overview' ? <Overview stats={stats.data} colors={colors} onAction={runAction} busy={action.isPending} /> : null}
-        {tab === 'Players' ? <ListCard title={`${stats.data?.online ?? 0}/${stats.data?.maxPlayers ?? 0} online`} empty="No players are currently online." items={(stats.data?.players ?? []).map((name) => ({ icon: 'user' as const, title: name, meta: 'Connected now' }))} /> : null}
+        {tab === 'Players' ? (
+          <ListCard
+            title={`${stats.data?.online ?? 0}/${stats.data?.maxPlayers ?? 0} online`}
+            empty="No players are currently online."
+            hint="Tap a player for kick, ban, heal, gamemode, inventory clear, and more."
+            items={(stats.data?.players ?? []).map((name) => ({ icon: 'user' as const, title: name, meta: 'Tap for player tools' }))}
+            onPressItem={(name) => setSelectedPlayer(name)}
+          />
+        ) : null}
         {tab === 'Logs' ? <View style={[styles.console, { backgroundColor: colors.card, borderColor: colors.border }]}>{logs.isLoading ? <Empty text="Loading logs…" /> : logs.data?.lines.length ? logs.data.lines.slice(-120).map((line, index) => <Text key={`${index}-${line}`} selectable style={[styles.logLine, { color: colors.mutedForeground }]}>{line}</Text>) : <Empty text="No log lines returned by Crafty." />}</View> : null}
         {tab === 'Files' ? <FilesPanel id={id} path={filePath} result={files} content={fileContent} error={fileError} onContent={setFileContent} onOpen={(path) => void loadPath(path)} onUp={() => void loadPath(filePath.split('/').slice(0, -1).join('/'))} onSave={() => saveFile.mutate({ id, data: { path: filePath, content: fileContent } }, { onSuccess: () => void loadPath(filePath) })} onDelete={(entry) => Alert.alert(`Delete ${entry.name}?`, 'This cannot be undone.', [{ text: 'Cancel', style: 'cancel' }, { text: 'Delete', style: 'destructive', onPress: () => deleteFile.mutate({ id, data: { path: entry.path } }, { onSuccess: () => void loadPath(filePath) }) }])} busy={saveFile.isPending || deleteFile.isPending} /> : null}
         {tab === 'Plugins' ? <ListCard title="Installed extensions" empty="No plugin or mod files were found." items={(plugins.data?.plugins ?? []).map((item) => ({ icon: 'package' as const, title: item.name, meta: `${item.kind} · ${formatBytes(item.size)}` }))} /> : null}
         {tab === 'Backups' ? <View><PrimaryButton icon="archive" label={action.isPending ? 'Creating backup…' : 'Create backup'} disabled={action.isPending} onPress={() => runAction('backup_server', 'Back up', 'Crafty will create a new server backup.')} /><ListCard title="Available backups" empty="No backups were returned by Crafty." items={(backups.data?.backups ?? []).map((item) => ({ icon: 'hard-drive' as const, title: item.name, meta: `${formatBytes(item.size)}${item.createdAt ? ` · ${new Date(item.createdAt).toLocaleString()}` : ''}` }))} /></View> : null}
       </ScrollView>
+      <PlayerDevSheet visible={!!selectedPlayer} serverId={id} player={selectedPlayer} onClose={() => setSelectedPlayer(null)} />
     </View>
   );
 }
@@ -150,13 +170,54 @@ function FilesPanel({ id: _id, path, result, content, error, onContent, onOpen, 
   return <View style={styles.sectionGap}><View style={styles.pathRow}><Pressable disabled={!path} onPress={onUp}><Feather name="arrow-up" size={18} color={path ? colors.primary : colors.mutedForeground} /></Pressable><Text numberOfLines={1} style={[styles.path, { color: colors.mutedForeground }]}>/{path}</Text></View>{result?.directory ? <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>{result.entries.length ? result.entries.map((entry) => <View key={entry.path} style={styles.fileRow}><Pressable onPress={() => onOpen(entry.path)} style={styles.fileOpen}><Feather name={entry.directory ? 'folder' : 'file-text'} size={17} color={entry.directory ? colors.warning : colors.info} /><View style={{ flex: 1 }}><Text style={[styles.itemTitle, { color: colors.foreground }]}>{entry.name}</Text><Text style={[styles.itemMeta, { color: colors.mutedForeground }]}>{entry.directory ? 'Folder' : formatBytes(entry.size)}</Text></View></Pressable><Pressable onPress={() => onDelete(entry)} hitSlop={8}><Feather name="trash-2" size={16} color={colors.destructive} /></Pressable></View>) : <Empty text="This folder is empty." />}</View> : <View><TextInput multiline value={content} onChangeText={onContent} autoCapitalize="none" autoCorrect={false} style={[styles.editor, { color: colors.foreground, backgroundColor: colors.card, borderColor: colors.border }]} /><PrimaryButton icon="save" label={busy ? 'Saving…' : 'Save file'} disabled={busy || !path} onPress={onSave} /></View>}</View>;
 }
 
-function ListCard({ title, empty, items }: { title: string; empty: string; items: { icon: keyof typeof Feather.glyphMap; title: string; meta: string }[] }) {
+function ListCard({
+  title,
+  empty,
+  hint,
+  items,
+  onPressItem,
+}: {
+  title: string;
+  empty: string;
+  hint?: string;
+  items: { icon: keyof typeof Feather.glyphMap; title: string; meta: string }[];
+  onPressItem?: (title: string) => void;
+}) {
   const colors = useColors();
-  return <View style={styles.sectionGap}><Text style={[styles.sectionTitle, { color: colors.foreground }]}>{title}</Text><View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>{items.length ? items.map((item, index) => <View key={`${item.title}-${index}`} style={styles.item}><Feather name={item.icon} size={17} color={colors.primary} /><View style={{ flex: 1 }}><Text style={[styles.itemTitle, { color: colors.foreground }]}>{item.title}</Text><Text style={[styles.itemMeta, { color: colors.mutedForeground }]}>{item.meta}</Text></View></View>) : <Empty text={empty} />}</View></View>;
+  return (
+    <View style={styles.sectionGap}>
+      <Text style={[styles.sectionTitle, { color: colors.foreground }]}>{title}</Text>
+      {hint ? <Text style={[styles.itemMeta, { color: colors.mutedForeground, marginTop: -4 }]}>{hint}</Text> : null}
+      <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
+        {items.length ? (
+          items.map((item, index) => {
+            const row = (
+              <View style={styles.item}>
+                <Feather name={item.icon} size={17} color={colors.primary} />
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.itemTitle, { color: colors.foreground }]}>{item.title}</Text>
+                  <Text style={[styles.itemMeta, { color: colors.mutedForeground }]}>{item.meta}</Text>
+                </View>
+                {onPressItem ? <Feather name="chevron-right" size={16} color={colors.mutedForeground} /> : null}
+              </View>
+            );
+            return onPressItem ? (
+              <Pressable key={`${item.title}-${index}`} onPress={() => onPressItem(item.title)} style={({ pressed }) => pressed && { opacity: 0.75 }}>
+                {row}
+              </Pressable>
+            ) : (
+              <View key={`${item.title}-${index}`}>{row}</View>
+            );
+          })
+        ) : (
+          <Empty text={empty} />
+        )}
+      </View>
+    </View>
+  );
 }
 
 function Metric({ label, value, colors }: { label: string; value: number; colors: ReturnType<typeof useColors> }) {
-  // Crafty values are already percentages.
   const normalized = Math.max(0, Math.min(100, Math.round(Number.isFinite(value) ? value : 0)));
   return (
     <View style={[styles.metricCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
@@ -171,12 +232,8 @@ function Empty({ text }: { text: string }) { const colors = useColors(); return 
 function formatBytes(value: number) { if (!value) return 'Size unavailable'; const units = ['B', 'KB', 'MB', 'GB']; const unit = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1); return `${(value / 1024 ** unit).toFixed(unit ? 1 : 0)} ${units[unit]}`; }
 
 const styles = StyleSheet.create({
-  kicker: { fontFamily: 'Inter_700Bold', fontSize: 10, letterSpacing: 2, marginBottom: 7 },
-  titleRow: { flexDirection: 'row', alignItems: 'center' },
-  title: { fontFamily: 'Inter_700Bold', fontSize: 30, letterSpacing: -1 },
-  subtitle: { fontFamily: 'Inter_400Regular', fontSize: 12, marginTop: 4 },
-  liveDot: { width: 10, height: 10, borderRadius: 5 },
-  tabs: { gap: 8, paddingVertical: 20 },
+  liveDotLg: { width: 14, height: 14, borderRadius: 7, borderWidth: 2, marginBottom: 8 },
+  tabs: { gap: 8, paddingVertical: 12 },
   notice: { padding: 12, borderRadius: 12, marginBottom: 12 },
   noticeText: { fontFamily: 'Inter_600SemiBold', fontSize: 12 },
   error: { fontFamily: 'Inter_500Medium', fontSize: 12, marginBottom: 12 },

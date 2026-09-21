@@ -15,6 +15,7 @@ import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { ControlAuthProvider, useControlAuth } from '@/context/ControlAuth';
 import { ServerProvider } from '@/context/ServerContext';
+import { AppUpdateGate } from '@/components/AppUpdateGate';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -24,7 +25,7 @@ function RootLayoutNav() {
   return (
     <Stack screenOptions={{ headerBackTitle: 'Back' }}>
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-      <Stack.Screen name="server/[id]" options={{ title: 'Server', headerShown: true }} />
+      <Stack.Screen name="server/[id]" options={{ headerShown: false }} />
     </Stack>
   );
 }
@@ -35,13 +36,21 @@ function AuthenticatedShell() {
 
   if (!isUnlocked) {
     return (
-      <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="(auth)" />
-      </Stack>
+      <>
+        <Stack screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="(auth)" />
+        </Stack>
+        <AppUpdateGate />
+      </>
     );
   }
 
-  return <RootLayoutNav />;
+  return (
+    <>
+      <RootLayoutNav />
+      <AppUpdateGate />
+    </>
+  );
 }
 
 export default function RootLayout() {
