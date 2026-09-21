@@ -121,7 +121,27 @@ export default function ServerScreen() {
 }
 
 function Overview({ stats, colors, onAction, busy }: { stats: CraftyStats | undefined; colors: ReturnType<typeof useColors>; onAction: (action: CraftyActionRequestAction, label: string, warning: string) => void; busy: boolean }) {
-  return <View style={styles.sectionGap}><View style={styles.metricGrid}><Metric label="CPU" value={stats?.cpu ?? 0} colors={colors} /><Metric label="Memory" value={stats?.memoryPercent ?? 0} colors={colors} /></View><View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}><Row label="Status" value={stats?.running ? 'Online' : 'Offline'} colors={colors} /><Row label="Version" value={stats?.version ?? 'Unknown'} colors={colors} /><Row label="Players" value={`${stats?.online ?? 0}/${stats?.maxPlayers ?? 0}`} colors={colors} /><Row label="Memory" value={stats?.memory ?? '—'} colors={colors} /></View><View style={styles.actions}><PrimaryButton icon="play" label="Start" disabled={busy || !!stats?.running} onPress={() => onAction('start_server', 'Start', 'Crafty will start this server.')} /><PrimaryButton icon="square" label="Stop" disabled={busy || !stats?.running} onPress={() => onAction('stop_server', 'Stop', 'Connected players will be disconnected.')} /><PrimaryButton icon="rotate-cw" label="Restart" disabled={busy || !stats?.running} onPress={() => onAction('restart_server', 'Restart', 'Connected players may be disconnected.')} /></View></View>;
+  return (
+    <View style={styles.sectionGap}>
+      <View style={styles.metricGrid}>
+        <Metric label="CPU" value={stats?.cpu ?? 0} colors={colors} />
+        <Metric label="Memory" value={stats?.memoryPercent ?? 0} colors={colors} />
+      </View>
+      <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
+        <Row label="Status" value={stats?.running ? 'Online' : 'Offline'} colors={colors} />
+        <Row label="Version" value={stats?.version ?? 'Unknown'} colors={colors} />
+        <Row label="Players" value={`${stats?.online ?? 0}/${stats?.maxPlayers ?? 0}`} colors={colors} />
+        <Row label="Memory" value={stats?.memory ?? '—'} colors={colors} />
+        <Row label="Uptime" value={stats?.uptime ?? '—'} colors={colors} />
+        <Row label="World" value={stats?.worldSize ?? '—'} colors={colors} />
+      </View>
+      <View style={styles.actions}>
+        <PrimaryButton icon="play" label="Start" disabled={busy || !!stats?.running} onPress={() => onAction('start_server', 'Start', 'Crafty will start this server.')} />
+        <PrimaryButton icon="square" label="Stop" disabled={busy || !stats?.running} onPress={() => onAction('stop_server', 'Stop', 'Connected players will be disconnected.')} />
+        <PrimaryButton icon="rotate-cw" label="Restart" disabled={busy || !stats?.running} onPress={() => onAction('restart_server', 'Restart', 'Connected players may be disconnected.')} />
+      </View>
+    </View>
+  );
 }
 
 function FilesPanel({ id: _id, path, result, content, error, onContent, onOpen, onUp, onSave, onDelete, busy }: { id: string; path: string; result: CraftyFileResponse | null; content: string; error: string | null; onContent: (value: string) => void; onOpen: (path: string) => void; onUp: () => void; onSave: () => void; onDelete: (entry: CraftyFileEntry) => void; busy: boolean }) {
@@ -135,7 +155,17 @@ function ListCard({ title, empty, items }: { title: string; empty: string; items
   return <View style={styles.sectionGap}><Text style={[styles.sectionTitle, { color: colors.foreground }]}>{title}</Text><View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>{items.length ? items.map((item, index) => <View key={`${item.title}-${index}`} style={styles.item}><Feather name={item.icon} size={17} color={colors.primary} /><View style={{ flex: 1 }}><Text style={[styles.itemTitle, { color: colors.foreground }]}>{item.title}</Text><Text style={[styles.itemMeta, { color: colors.mutedForeground }]}>{item.meta}</Text></View></View>) : <Empty text={empty} />}</View></View>;
 }
 
-function Metric({ label, value, colors }: { label: string; value: number; colors: ReturnType<typeof useColors> }) { const normalized = Math.min(100, Math.round(value <= 1.5 ? value * 100 : value)); return <View style={[styles.metricCard, { backgroundColor: colors.card, borderColor: colors.border }]}><Text style={[styles.metricValue, { color: colors.foreground }]}>{normalized}%</Text><Text style={[styles.itemMeta, { color: colors.mutedForeground }]}>{label}</Text><MetricBar value={normalized} color={normalized > 80 ? colors.warning : colors.primary} /></View>; }
+function Metric({ label, value, colors }: { label: string; value: number; colors: ReturnType<typeof useColors> }) {
+  // Crafty values are already percentages.
+  const normalized = Math.max(0, Math.min(100, Math.round(Number.isFinite(value) ? value : 0)));
+  return (
+    <View style={[styles.metricCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+      <Text style={[styles.metricValue, { color: colors.foreground }]}>{normalized}%</Text>
+      <Text style={[styles.itemMeta, { color: colors.mutedForeground }]}>{label}</Text>
+      <MetricBar value={normalized} color={normalized > 80 ? colors.warning : colors.primary} />
+    </View>
+  );
+}
 function Row({ label, value, colors }: { label: string; value: string; colors: ReturnType<typeof useColors> }) { return <View style={styles.row}><Text style={[styles.itemMeta, { color: colors.mutedForeground }]}>{label}</Text><Text style={[styles.rowValue, { color: colors.foreground }]}>{value}</Text></View>; }
 function Empty({ text }: { text: string }) { const colors = useColors(); return <Text style={[styles.empty, { color: colors.mutedForeground }]}>{text}</Text>; }
 function formatBytes(value: number) { if (!value) return 'Size unavailable'; const units = ['B', 'KB', 'MB', 'GB']; const unit = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1); return `${(value / 1024 ** unit).toFixed(unit ? 1 : 0)} ${units[unit]}`; }

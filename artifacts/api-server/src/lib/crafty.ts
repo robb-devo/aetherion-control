@@ -46,6 +46,9 @@ export type CraftyStats = {
   players: string[];
   version: string;
   port: number;
+  worldSize: string;
+  startedAt: string | null;
+  uptime: string;
   updatedAt: string;
 };
 
@@ -131,10 +134,12 @@ export async function craftyRequest<T>(path: string, init: RequestInit = {}) {
 }
 
 function normalize(record: CraftyServerRecord): CraftyServer {
+  const rawIp = record.server_ip ?? "127.0.0.1";
+  const publicIp = process.env.PUBLIC_HOST_IP?.trim() || process.env.DEDICATED_HOST_IP?.trim() || "135.181.18.162";
   return {
     id: record.server_id ?? record.server_uuid ?? "",
     name: record.server_name ?? "Unnamed server",
-    ip: record.server_ip ?? "127.0.0.1",
+    ip: rawIp === "127.0.0.1" || rawIp === "0.0.0.0" ? publicIp : rawIp,
     port: record.server_port ?? 25565,
     type: record.type ?? "minecraft-java",
     executable: record.executable ?? "",
@@ -222,17 +227,42 @@ export async function getCraftyHealth() {
   return parse<{ status: string }>(response);
 }
 
+function formatBytes(value: unknown) {
+  const bytes = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(bytes) || bytes <= 0) return "—";
+  const gb = bytes / 1024 ** 3;
+  if (gb >= 1) return `${gb.toFixed(1)} GB`;
+  const mb = bytes / 1024 ** 2;
+  if (mb >= 1) return `${Math.round(mb)} MB`;
+  return `${Math.round(bytes)} B`;
+}
+
+function formatUptime(started: unknown) {
+  if (typeof started !== "string" || !started.trim()) return "—";
+  const startedMs = Date.parse(started.replace(" ", "T"));
+  if (!Number.isFinite(startedMs)) return "—";
+  const seconds = Math.max(0, Math.floor((Date.now() - startedMs) / 1000));
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
 export async function getCraftyStats(id: string) {
   const data = await craftyRequest<{
     running?: boolean;
     cpu?: number;
-    mem?: string;
+    mem?: string | number;
     mem_percent?: number | string;
     online?: number;
     max?: number;
     players?: string | string[];
     version?: string;
     server_port?: number;
+    world_size?: string;
+    started?: string;
   }>(`/api/v2/servers/${encodeURIComponent(id)}/stats`);
   let players: string[] = [];
   if (Array.isArray(data.players)) players = data.players.filter((player): player is string => typeof player === "string");
@@ -244,16 +274,22 @@ export async function getCraftyStats(id: string) {
       players = data.players.split(",").map((player) => player.trim()).filter(Boolean);
     }
   }
+  // Crafty already reports cpu + mem_percent as percentages (e.g. 1.3, 6.0).
+  const cpu = Number(data.cpu ?? 0);
+  const memoryPercent = Number(data.mem_percent ?? 0);
   return {
     running: Boolean(data.running),
-    cpu: Number(data.cpu ?? 0),
-    memory: data.mem ?? "—",
-    memoryPercent: Number(data.mem_percent ?? 0),
+    cpu: Number.isFinite(cpu) ? Math.round(cpu * 10) / 10 : 0,
+    memory: formatBytes(data.mem),
+    memoryPercent: Number.isFinite(memoryPercent) ? Math.round(memoryPercent) : 0,
     online: Number(data.online ?? 0),
     maxPlayers: Number(data.max ?? 0),
     players,
     version: data.version ?? "Unknown",
     port: Number(data.server_port ?? 25565),
+    worldSize: data.world_size || "—",
+    startedAt: typeof data.started === "string" ? data.started : null,
+    uptime: data.running ? formatUptime(data.started) : "Offline",
     updatedAt: new Date().toISOString(),
   } satisfies CraftyStats;
 }

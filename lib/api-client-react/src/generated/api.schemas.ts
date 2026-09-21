@@ -59,6 +59,9 @@ export interface CraftyStats {
   players: string[];
   version: string;
   port: number;
+  worldSize?: string;
+  startedAt?: string | null;
+  uptime?: string;
   updatedAt: string;
 }
 

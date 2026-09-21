@@ -2,17 +2,15 @@
   "expo": {
     "name": "AETHERION",
     "slug": "minecraft-server-control",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "minecraft-server-control",
     "userInterfaceStyle": "automatic",
-    "ios": {
-      "supportsTablet": false
-    },
+    "ios": { "supportsTablet": false },
     "android": {
       "package": "com.aetherion.control",
-      "versionCode": 4,
+      "versionCode": 5,
       "supportsTablet": false,
       "usesCleartextTraffic": true,
       "adaptiveIcon": {
@@ -20,17 +18,8 @@
         "backgroundColor": "#08070D"
       }
     },
-    "web": {
-      "favicon": "./assets/images/icon.png"
-    },
-    "plugins": [
-      "expo-router",
-      "expo-secure-store",
-      "./plugins/withCleartextTraffic.js"
-    ],
-    "experiments": {
-      "typedRoutes": true,
-      "reactCompiler": true
-    }
+    "web": { "favicon": "./assets/images/icon.png" },
+    "plugins": ["expo-router", "expo-secure-store", "./plugins/withCleartextTraffic.js"],
+    "experiments": { "typedRoutes": true, "reactCompiler": true }
   }
 }

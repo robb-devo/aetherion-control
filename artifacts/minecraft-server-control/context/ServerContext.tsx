@@ -20,6 +20,7 @@ export type MinecraftServer = {
   uptime: string;
   ip: string;
   version?: string;
+  memoryLabel?: string;
 };
 
 export type ConsoleLine = {
@@ -56,9 +57,10 @@ function nowLabel() {
   return new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
-function percent(value: number) {
-  const normalized = value <= 1.5 ? value * 100 : value;
-  return Math.max(0, Math.min(100, Math.round(normalized)));
+function asPercent(value: number) {
+  // Crafty already returns percentages (cpu ~1.3, mem_percent ~6). Never multiply.
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.round(value));
 }
 
 function tagFor(server: CraftyServer) {
@@ -67,7 +69,7 @@ function tagFor(server: CraftyServer) {
 
 function toMinecraftServer(server: CraftyServer, stats: CraftyStats | null): MinecraftServer {
   const running = stats?.running ?? false;
-  const cpu = percent(stats?.cpu ?? 0);
+  const cpu = asPercent(stats?.cpu ?? 0);
   return {
     id: server.id,
     name: server.name,
@@ -76,11 +78,12 @@ function toMinecraftServer(server: CraftyServer, stats: CraftyStats | null): Min
     players: stats?.online ?? 0,
     maxPlayers: stats?.maxPlayers ?? 0,
     cpu,
-    ram: percent(stats?.memoryPercent ?? 0),
+    ram: asPercent(stats?.memoryPercent ?? 0),
     disk: 0,
-    uptime: running ? 'Live' : 'Offline',
+    uptime: stats?.uptime ?? (running ? 'Live' : 'Offline'),
     ip: `${server.ip}:${server.port}`,
     version: stats?.version,
+    memoryLabel: stats?.memory,
   };
 }
 
@@ -98,8 +101,8 @@ export function ServerProvider({ children }: { children: React.ReactNode }) {
     AsyncStorage.getItem(STORAGE_KEY)
       .then((value) => {
         if (!value) return;
-        const saved = JSON.parse(value) as { servers?: MinecraftServer[]; lines?: ConsoleLine[] };
-        if (saved.servers?.length) setServers(saved.servers);
+        const saved = JSON.parse(value) as { lines?: ConsoleLine[] };
+        // Do not restore server metrics from cache — they go stale and look like placeholders.
         if (saved.lines?.length) setLines(saved.lines);
       })
       .catch(() => undefined)
@@ -140,16 +143,20 @@ export function ServerProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (isHydrated && isUnlocked) {
       void refresh();
-    } else if (isHydrated && !isUnlocked) {
+      const timer = setInterval(() => void refresh(), 10000);
+      return () => clearInterval(timer);
+    }
+    if (isHydrated && !isUnlocked) {
       setIsLoading(false);
       setError(null);
     }
+    return undefined;
   }, [isHydrated, isUnlocked, refresh]);
 
   useEffect(() => {
     if (!isHydrated) return;
-    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ servers, lines })).catch(() => undefined);
-  }, [isHydrated, lines, servers]);
+    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ lines })).catch(() => undefined);
+  }, [isHydrated, lines]);
 
   const restartServer = (id: string) => {
     const server = servers.find((item) => item.id === id);
