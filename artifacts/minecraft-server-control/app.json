@@ -14,7 +14,6 @@
       "package": "com.aetherion.control",
       "versionCode": 2,
       "supportsTablet": false,
-      "edgeToEdgeEnabled": true,
       "usesCleartextTraffic": true,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/icon.png",
@@ -24,7 +23,10 @@
     "web": {
       "favicon": "./assets/images/icon.png"
     },
-    "plugins": ["expo-router"],
+    "plugins": [
+      "expo-router",
+      "expo-secure-store"
+    ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true

@@ -1,33 +1,26 @@
-# AETHERION Control
+﻿# AETHERION Control
 
-Private phone app + API to steer Crafty on the Hetzner box.
+Private Android app to steer Crafty on your Hetzner box.
 
-## Unlock (phone)
+## Download APK
 
-1. API Base: `http://135.181.18.162:5055`
-2. Control API Key: value of `CONTROL_API_KEY` on the server (`/etc/aetherion-control.env`)
+Get the latest APK from **[Releases](https://github.com/robb-devo/aetherion-control/releases)**.
 
-## Server deploy
+Install on Android (allow unknown sources), open the app, unlock with:
 
-```bash
-# on Hetzner after syncing this repo to /opt/aetherion-control
-cd /opt/aetherion-control
-pnpm install
-pnpm --filter @workspace/api-server run build
-install -m 600 deploy/aetherion-control.env.example /etc/aetherion-control.env
-# edit /etc/aetherion-control.env → CRAFTY_API_TOKEN + CONTROL_API_KEY
-cp deploy/aetherion-control.service /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable --now aetherion-control
-ufw allow 5055/tcp || true
-curl -s http://127.0.0.1:5055/api/healthz
-```
+| Field | Value |
+|------|------|
+| API Base URL | `http://135.181.18.162:5055` |
+| Control API Key | value of `CONTROL_API_KEY` in `/etc/aetherion-control.env` on the server |
 
-## Local mobile
+Then: **Servers** → tap a node → Start / Stop / Restart. Console sends commands to the selected server.
 
-```bash
-pnpm install
-pnpm --filter @workspace/minecraft-server-control run dev
-```
+## What this is
 
-APK: `eas build` / Expo export once the API is live.
+- Mobile UI salvaged from the Replit scaffold (server list, detail, console)
+- Personal Control API on the Hetzner host (no Clerk / Google / Replit)
+- Crafty wired with a real API token
+
+## Server API
+
+Runs as `aetherion-control.service` on port **5055**.
