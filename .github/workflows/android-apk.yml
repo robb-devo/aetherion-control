@@ -132,6 +132,14 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: |
+            platform-tools
+            cmdline-tools;latest
+            build-tools;35.0.0
+            platforms;android-35
+            ndk;27.1.12297006
+            cmake;3.22.1
 
       # Versions match the Expo SDK 57 / React Native 0.86 catalog
       # (compileSdk 36, build-tools 36.0.0, NDK 27.1.12297006).
