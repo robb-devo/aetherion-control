@@ -110,7 +110,17 @@ jobs:
           fi
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: |
+          set -euo pipefail
+          # Metro sets disableHierarchicalLookup, so it only searches the app and
+          # workspace node_modules. Hoist Expo/Metro so entry-classic.js can
+          # resolve @expo/metro-runtime. These settings do not change the lockfile.
+          touch .npmrc
+          grep -qxF 'shamefully-hoist=true' .npmrc || echo 'shamefully-hoist=true' >> .npmrc
+          grep -qxF 'public-hoist-pattern[]=*expo*' .npmrc || echo 'public-hoist-pattern[]=*expo*' >> .npmrc
+          grep -qxF 'public-hoist-pattern[]=*metro*' .npmrc || echo 'public-hoist-pattern[]=*metro*' >> .npmrc
+          grep -qxF 'public-hoist-pattern[]=*whatwg*' .npmrc || echo 'public-hoist-pattern[]=*whatwg*' >> .npmrc
+          pnpm install --frozen-lockfile
 
       # Workspace overrides drop every esbuild platform binary except the one
       # recorded in the lockfile. On ubuntu-latest that package is linux-x64.
@@ -123,6 +133,10 @@ jobs:
             exit 1
           fi
           echo "Found ${FOUND}"
+          if [ ! -e node_modules/@expo/metro-runtime ] && [ ! -e artifacts/minecraft-server-control/node_modules/@expo/metro-runtime ]; then
+            echo "Missing @expo/metro-runtime in node_modules. Metro cannot bundle expo-router/entry-classic.js."
+            exit 1
+          fi
 
       - name: Set up Java
         uses: actions/setup-java@v4
