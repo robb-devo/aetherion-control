@@ -2,21 +2,42 @@ import { Feather } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import React from 'react';
-import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useColors } from '@/hooks/useColors';
+import { useAppUpdate } from '@/context/AppUpdate';
 import { useServerControl } from '@/context/ServerContext';
 import { MetricBar, SectionTitle, StatusDot, uiStyles } from '@/components/ControlUI';
+import { findEdgeServer, formatPercent, summarizeServers } from '@/lib/liveServers';
 
 export default function OverviewScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { servers, lines, lastAction, restartServer, isLoading, error, refresh } = useServerControl();
-  const online = servers.filter((server) => server.status === 'online').length;
-  const totalPlayers = servers.reduce((sum, server) => sum + server.players, 0);
-  const averageCpu = servers.length ? Math.round(servers.reduce((sum, server) => sum + server.cpu, 0) / servers.length) : 0;
-  const operational = !error && servers.length > 0 && online === servers.length;
+  const { servers, lines, lastAction, restartServer, backupServer, isLoading, error, refresh, syncedAt, consoleTargetId, clearAction } = useServerControl();
+  const update = useAppUpdate();
+  const summary = summarizeServers(servers);
+  const waitingForFirstSync = isLoading && servers.length === 0;
+  const operational = !error && summary.count > 0 && summary.online === summary.count && !summary.partial && !summary.stale;
+  const updateReady = update.phase.kind === 'ready' && update.phase.decision.kind === 'update';
+  const pill = waitingForFirstSync
+    ? 'SYNCING WITH CRAFTY'
+    : error
+      ? 'CRAFTY CONNECTION ISSUE'
+      : summary.stale
+        ? 'CACHED SERVER STATS'
+        : operational
+          ? 'ALL SYSTEMS OPERATIONAL'
+          : summary.partial
+            ? 'STATS INCOMPLETE'
+            : 'SYSTEMS NEED ATTENTION';
+  const heroDetail = error
+    ? `${error}${syncedAt ? ` Last confirmed ${clock(syncedAt)}.` : ''}`
+    : summary.players == null
+      ? 'Crafty has not reported player counts.'
+      : summary.partial
+        ? `${summary.players} Spieler gemeldet. Für einige Server fehlen Stats.`
+        : `${summary.players} Spieler sind gerade im Netzwerk.`;
 
   return (
     <View style={[uiStyles.screen, { backgroundColor: colors.background }]}>
@@ -32,35 +53,50 @@ export default function OverviewScreen() {
 
         <LinearGradient colors={['#2C1747', '#11101B']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.hero}>
           <View style={styles.heroTop}>
-            <View style={styles.livePill}><StatusDot status={operational ? 'online' : error ? 'offline' : 'degraded'} /><Text style={styles.liveText}>{isLoading ? 'SYNCING WITH CRAFTY' : operational ? 'ALL SYSTEMS OPERATIONAL' : error ? 'CRAFTY CONNECTION ISSUE' : 'SYSTEMS NEED ATTENTION'}</Text></View>
+            <View style={styles.livePill}><StatusDot status={operational ? 'online' : error ? 'offline' : summary.stale || summary.partial ? 'unknown' : 'offline'} /><Text style={styles.liveText}>{pill}</Text></View>
             <Feather name="activity" size={20} color="#D7B8FF" />
           </View>
-          <Text style={styles.heroTitle}>{isLoading && !servers.length ? 'Loading live systems…' : `${online}/${servers.length} systems online`}</Text>
-          <Text style={styles.heroSubtitle}>{error ?? `${totalPlayers} Spieler sind gerade im Netzwerk.`}</Text>
+          <Text style={styles.heroTitle}>{waitingForFirstSync ? 'Loading live systems…' : `${summary.online}/${summary.count} systems online`}</Text>
+          <Text style={styles.heroSubtitle}>{heroDetail}</Text>
           <View style={styles.heroRule} />
           <View style={styles.heroMetrics}>
-            <View><Text style={styles.heroMetricValue}>{servers.length}</Text><Text style={styles.heroMetricLabel}>Crafty servers</Text></View>
-            <View><Text style={styles.heroMetricValue}>{totalPlayers}</Text><Text style={styles.heroMetricLabel}>Online players</Text></View>
-            <View><Text style={styles.heroMetricValue}>{averageCpu}%</Text><Text style={styles.heroMetricLabel}>Average CPU</Text></View>
+            <View><Text style={styles.heroMetricValue}>{summary.count}</Text><Text style={styles.heroMetricLabel}>Crafty servers</Text></View>
+            <View><Text style={styles.heroMetricValue}>{summary.players ?? '—'}</Text><Text style={styles.heroMetricLabel}>Reported players</Text></View>
+            <View><Text style={styles.heroMetricValue}>{formatPercent(summary.averageCpu)}</Text><Text style={styles.heroMetricLabel}>Average CPU</Text></View>
           </View>
         </LinearGradient>
 
-        {lastAction ? <Pressable onPress={() => undefined} style={[styles.toast, { backgroundColor: colors.secondary, borderColor: colors.border }]}><Feather name="check-circle" size={16} color={colors.success} /><Text style={[styles.toastText, { color: colors.foreground }]}>{lastAction}</Text></Pressable> : null}
+        {updateReady ? <Pressable onPress={() => router.push('/tools')} style={({ pressed }) => [styles.toast, { backgroundColor: colors.secondary, borderColor: colors.border }, pressed && { opacity: 0.8 }]}><Feather name="download" size={16} color={colors.primary} /><Text style={[styles.toastText, { color: colors.foreground }]}>Version {update.phase.kind === 'ready' ? update.phase.decision.release.version : ''} is published. Review the install steps in Tools.</Text></Pressable> : null}
+        {lastAction ? <Pressable onPress={clearAction} style={[styles.toast, { backgroundColor: colors.secondary, borderColor: colors.border }]}><Feather name={lastAction.tone === 'error' ? 'alert-circle' : lastAction.tone === 'success' ? 'check-circle' : 'info'} size={16} color={lastAction.tone === 'error' ? colors.destructive : lastAction.tone === 'success' ? colors.success : colors.info} /><Text style={[styles.toastText, { color: colors.foreground }]}>{lastAction.text}</Text></Pressable> : null}
 
         <SectionTitle title="Quick actions" eyebrow="CONTROL" />
         <View style={styles.quickGrid}>
           <QuickAction icon="terminal" label="Open console" color={colors.info} onPress={() => router.push('/console')} />
-          <QuickAction icon="rotate-cw" label="Restart proxy" color={colors.warning} onPress={() => restartServer('proxy')} />
-          <QuickAction icon="radio" label="Broadcast" color={colors.primary} onPress={() => router.push('/console')} />
-          <QuickAction icon="archive" label="Backup now" color={colors.success} onPress={() => router.push('/tools')} />
+          <QuickAction icon="rotate-cw" label="Restart proxy" color={colors.warning} onPress={() => {
+            const edge = findEdgeServer(servers);
+            if (!edge) {
+              Alert.alert('No proxy found', 'Crafty did not return a Velocity, proxy, or gateway server.');
+              return;
+            }
+            restartServer(edge.id);
+          }} />
+          <QuickAction icon="radio" label="Say message" color={colors.primary} onPress={() => router.push({ pathname: '/console', params: { prefill: 'say ' } })} />
+          <QuickAction icon="archive" label="Backup now" color={colors.success} onPress={() => {
+            const target = servers.find((server) => server.id === consoleTargetId) ?? servers.find((server) => server.tag === 'PLAY') ?? servers[0];
+            if (!target) {
+              Alert.alert('No server', 'Crafty has not returned a server to back up.');
+              return;
+            }
+            backupServer(target.id);
+          }} />
         </View>
 
         <SectionTitle title="Your servers" eyebrow="INFRASTRUCTURE" action="View all" onAction={() => router.push('/servers')} />
         <View style={styles.serverList}>
           {servers.slice(0, 3).map((server) => (
-            <Pressable key={server.id} onPress={() => router.push('/servers')} style={({ pressed }) => [styles.serverRow, { backgroundColor: colors.card, borderColor: colors.border }, pressed && { opacity: 0.78 }]}>
-              <View style={[styles.serverIcon, { backgroundColor: server.status === 'degraded' ? '#3A3020' : colors.accent }]}><Feather name={server.tag === 'EDGE' ? 'shuffle' : 'box'} size={18} color={server.status === 'degraded' ? colors.warning : colors.primary} /></View>
-              <View style={styles.serverInfo}><View style={styles.serverNameLine}><Text style={[styles.serverName, { color: colors.foreground }]}>{server.name}</Text><StatusDot status={server.status} /></View><Text style={[styles.serverMeta, { color: colors.mutedForeground }]}>{server.players}/{server.maxPlayers} players · {server.uptime} uptime</Text><MetricBar value={server.cpu} color={server.status === 'degraded' ? colors.warning : colors.primary} /></View>
+            <Pressable key={server.id} onPress={() => router.push(`/server/${server.id}` as never)} style={({ pressed }) => [styles.serverRow, { backgroundColor: colors.card, borderColor: colors.border }, pressed && { opacity: 0.78 }]}>
+              <View style={[styles.serverIcon, { backgroundColor: server.status === 'offline' ? colors.secondary : colors.accent }]}><Feather name={server.tag === 'EDGE' ? 'shuffle' : 'box'} size={18} color={server.status === 'offline' ? colors.destructive : colors.primary} /></View>
+              <View style={styles.serverInfo}><View style={styles.serverNameLine}><Text style={[styles.serverName, { color: colors.foreground }]}>{server.name}</Text><StatusDot status={server.status} /></View><Text style={[styles.serverMeta, { color: colors.mutedForeground }]}>{server.metricsKnown ? `${server.players ?? '—'}/${server.maxPlayers ?? '—'} players · ${server.uptime ?? '—'}${server.statsFresh ? '' : ' · cached'}` : 'Stats unavailable'}</Text>{server.cpu != null ? <MetricBar value={server.cpu} color={server.cpu > 80 ? colors.warning : colors.primary} /> : null}</View>
               <Feather name="chevron-right" size={18} color={colors.mutedForeground} />
             </Pressable>
           ))}
@@ -79,6 +115,10 @@ export default function OverviewScreen() {
 function QuickAction({ icon, label, color, onPress }: { icon: keyof typeof Feather.glyphMap; label: string; color: string; onPress: () => void }) {
   const colors = useColors();
   return <Pressable onPress={onPress} style={({ pressed }) => [styles.quickAction, { backgroundColor: colors.card, borderColor: colors.border }, pressed && { opacity: 0.75 }]}><View style={[styles.quickIcon, { backgroundColor: `${color}20` }]}><Feather name={icon} size={18} color={color} /></View><Text style={[styles.quickLabel, { color: colors.foreground }]}>{label}</Text></Pressable>;
+}
+
+function clock(value: number) {
+  return new Date(value).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
 function Activity({ icon, title, meta, time, color }: { icon: keyof typeof Feather.glyphMap; title: string; meta: string; time: string; color: string }) {

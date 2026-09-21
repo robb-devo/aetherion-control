@@ -1,26 +1,29 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Haptics from 'expo-haptics';
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert } from 'react-native';
-import { runCraftyServerAction, sendCraftyServerCommand, listCraftyServers, getCraftyServerStats, type CraftyActionRequestAction, type CraftyServer, type CraftyStats } from '@workspace/api-client-react';
+import {
+  getCraftyServerStats,
+  listCraftyServerBackups,
+  listCraftyServers,
+  runCraftyServerAction,
+  sendCraftyServerCommand,
+  type CraftyActionRequestAction,
+  type CraftyStats,
+} from '@workspace/api-client-react';
 import { useControlAuth } from '@/context/ControlAuth';
+import {
+  mergeLiveServers,
+  toMinecraftServer,
+  withConfirmedStats,
+  type MinecraftServer,
+} from '@/lib/liveServers';
 
-export type ServerStatus = 'online' | 'degraded' | 'offline' | 'restarting';
+export type { MinecraftServer, ServerStatus } from '@/lib/liveServers';
 
-export type MinecraftServer = {
-  id: string;
-  name: string;
-  tag: string;
-  status: ServerStatus;
-  players: number;
-  maxPlayers: number;
-  cpu: number;
-  ram: number;
-  disk: number;
-  uptime: string;
-  ip: string;
-  version?: string;
-  memoryLabel?: string;
+export type ActionNotice = {
+  tone: 'info' | 'success' | 'error';
+  text: string;
 };
 
 export type ConsoleLine = {
@@ -31,23 +34,26 @@ export type ConsoleLine = {
 };
 
 const STORAGE_KEY = 'minecraft-server-control-state';
+const LEGACY_ACTIVITY = /Connect to Crafty to load live console output|Connected to Crafty ·/;
 
 const initialLines: ConsoleLine[] = [
-  { id: '1', time: '—', tone: 'normal', text: 'Connect to Crafty to load live console output.' },
+  { id: 'activity-empty', time: '—', tone: 'normal', text: 'Actions Crafty accepts show up here.' },
 ];
 
 type ServerContextValue = {
   servers: MinecraftServer[];
   lines: ConsoleLine[];
-  lastAction: string | null;
+  lastAction: ActionNotice | null;
   isHydrated: boolean;
   isLoading: boolean;
   error: string | null;
+  syncedAt: number | null;
   consoleTargetId: string | null;
   setConsoleTargetId: (id: string) => void;
   refresh: () => Promise<void>;
   restartServer: (id: string) => void;
-  runCommand: (command: string) => void;
+  backupServer: (id: string) => void;
+  runCommand: (command: string) => Promise<boolean>;
   clearAction: () => void;
 };
 
@@ -57,63 +63,50 @@ function nowLabel() {
   return new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
-function asPercent(value: number) {
-  // Crafty already returns percentages (cpu ~1.3, mem_percent ~6). Never multiply.
-  if (!Number.isFinite(value)) return 0;
-  return Math.max(0, Math.round(value));
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function tagFor(server: CraftyServer) {
-  return /proxy|velocity|gateway/i.test(server.name) ? 'EDGE' : 'PLAY';
-}
-
-function toMinecraftServer(server: CraftyServer, stats: CraftyStats | null): MinecraftServer {
-  const running = stats?.running ?? false;
-  const cpu = asPercent(stats?.cpu ?? 0);
-  return {
-    id: server.id,
-    name: server.name,
-    tag: tagFor(server),
-    status: running ? (cpu > 82 ? 'degraded' : 'online') : 'offline',
-    players: stats?.online ?? 0,
-    maxPlayers: stats?.maxPlayers ?? 0,
-    cpu,
-    ram: asPercent(stats?.memoryPercent ?? 0),
-    disk: 0,
-    uptime: stats?.uptime ?? (running ? 'Live' : 'Offline'),
-    ip: `${server.ip}:${server.port}`,
-    version: stats?.version,
-    memoryLabel: stats?.memory,
-  };
+function messageOf(cause: unknown, fallback: string) {
+  return cause instanceof Error ? cause.message : fallback;
 }
 
 export function ServerProvider({ children }: { children: React.ReactNode }) {
   const { isUnlocked } = useControlAuth();
   const [servers, setServers] = useState<MinecraftServer[]>([]);
   const [lines, setLines] = useState<ConsoleLine[]>(initialLines);
-  const [lastAction, setLastAction] = useState<string | null>(null);
+  const [lastAction, setLastAction] = useState<ActionNotice | null>(null);
   const [isHydrated, setIsHydrated] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [syncedAt, setSyncedAt] = useState<number | null>(null);
   const [consoleTargetId, setConsoleTargetId] = useState<string | null>(null);
+  const generation = useRef(0);
+  const inFlight = useRef(false);
+  const restartingIds = useRef(new Set<string>());
+  const serversRef = useRef(servers);
+  serversRef.current = servers;
 
   useEffect(() => {
     AsyncStorage.getItem(STORAGE_KEY)
       .then((value) => {
         if (!value) return;
         const saved = JSON.parse(value) as { lines?: ConsoleLine[] };
-        // Do not restore server metrics from cache — they go stale and look like placeholders.
-        if (saved.lines?.length) setLines(saved.lines);
+        const restored = saved.lines?.filter((line) => !LEGACY_ACTIVITY.test(line.text)) ?? [];
+        if (restored.length) setLines(restored);
       })
       .catch(() => undefined)
       .finally(() => setIsHydrated(true));
   }, []);
 
-  const refresh = useCallback(async () => {
-    setIsLoading(true);
-    setError(null);
+  const refresh = useCallback(async (options?: { silent?: boolean }) => {
+    if (options?.silent && inFlight.current) return;
+    const gen = ++generation.current;
+    inFlight.current = true;
+    if (!options?.silent) setIsLoading(true);
     try {
       const response = await listCraftyServers();
+      if (generation.current !== gen) return;
       const liveServers = await Promise.all(response.servers.map(async (server) => {
         try {
           return toMinecraftServer(server, await getCraftyServerStats(server.id));
@@ -121,7 +114,10 @@ export function ServerProvider({ children }: { children: React.ReactNode }) {
           return toMinecraftServer(server, null);
         }
       }));
-      setServers(liveServers);
+      if (generation.current !== gen) return;
+      setServers((current) => mergeLiveServers(current, liveServers, restartingIds.current));
+      setSyncedAt(Date.now());
+      setError(null);
       setConsoleTargetId((current) => {
         if (current && liveServers.some((server) => server.id === current)) return current;
         const preferred =
@@ -130,20 +126,23 @@ export function ServerProvider({ children }: { children: React.ReactNode }) {
           liveServers[0];
         return preferred?.id ?? null;
       });
-      setLines((current) => current[0]?.text === initialLines[0].text ? [{ id: `${Date.now()}-connected`, time: nowLabel(), tone: 'success', text: `Connected to Crafty · ${liveServers.length} servers loaded` }] : current);
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message : 'Crafty could not be reached.';
+      if (generation.current !== gen) return;
+      const message = messageOf(cause, 'Crafty could not be reached.');
       setError(message);
-      setLastAction('Crafty-Verbindung konnte nicht geladen werden');
+      if (!options?.silent) setLastAction({ tone: 'error', text: message });
     } finally {
-      setIsLoading(false);
+      if (generation.current === gen) {
+        inFlight.current = false;
+        setIsLoading(false);
+      }
     }
   }, []);
 
   useEffect(() => {
     if (isHydrated && isUnlocked) {
       void refresh();
-      const timer = setInterval(() => void refresh(), 10000);
+      const timer = setInterval(() => void refresh({ silent: true }), 10000);
       return () => clearInterval(timer);
     }
     if (isHydrated && !isUnlocked) {
@@ -158,12 +157,64 @@ export function ServerProvider({ children }: { children: React.ReactNode }) {
     AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ lines })).catch(() => undefined);
   }, [isHydrated, lines]);
 
-  const restartServer = (id: string) => {
-    const server = servers.find((item) => item.id === id);
-    if (!server || server.status === 'restarting') return;
+  const pushLine = useCallback((tone: ConsoleLine['tone'], text: string) => {
+    setLines((current) => [{ id: `${Date.now()}-${tone}`, time: nowLabel(), tone, text }, ...current].slice(0, 20));
+  }, []);
+
+  const confirmRestart = useCallback(async (server: MinecraftServer) => {
+    let sawStopped = false;
+    for (let attempt = 0; attempt < 24; attempt += 1) {
+      await sleep(3000);
+      if (!restartingIds.current.has(server.id)) return;
+      try {
+        const stats = await getCraftyServerStats(server.id);
+        if (!restartingIds.current.has(server.id)) return;
+        if (!stats.running) {
+          sawStopped = true;
+          continue;
+        }
+        if (sawStopped) {
+          restartingIds.current.delete(server.id);
+          setServers((current) => current.map((item) => item.id === server.id ? withConfirmedStats(item, stats) : item));
+          const text = `${server.name} is back online. Crafty reports it running.`;
+          setLastAction({ tone: 'success', text });
+          pushLine('success', text);
+          return;
+        }
+      } catch {
+        // Keep waiting. A missed poll is not confirmation either way.
+      }
+    }
+
+    if (!restartingIds.current.has(server.id)) return;
+    let latest: CraftyStats | null = null;
+    try {
+      latest = await getCraftyServerStats(server.id);
+    } catch {
+      latest = null;
+    }
+    restartingIds.current.delete(server.id);
+    if (!latest) {
+      setServers((current) => current.map((item) => item.id === server.id ? { ...item, status: 'unknown', statsFresh: false } : item));
+      const text = `Crafty accepted the restart for ${server.name}, then stopped reporting stats.`;
+      setLastAction({ tone: 'error', text });
+      pushLine('error', text);
+      return;
+    }
+    setServers((current) => current.map((item) => item.id === server.id ? withConfirmedStats(item, latest) : item));
+    const text = latest.running && !sawStopped
+      ? `Crafty accepted the restart for ${server.name}, but the server never reported offline. It is still running.`
+      : `Crafty accepted the restart for ${server.name}. The server is still offline.`;
+    setLastAction({ tone: 'info', text });
+    pushLine('warning', text);
+  }, [pushLine]);
+
+  const restartServer = useCallback((id: string) => {
+    const server = serversRef.current.find((item) => item.id === id);
+    if (!server || server.status === 'restarting' || restartingIds.current.has(id)) return;
     Alert.alert(
       `Restart ${server.name}?`,
-      'Crafty will stop and start this server. Players may be disconnected.',
+      'Crafty will be asked to restart this server. Players may be disconnected. This app will not call it finished until Crafty reports the server online again.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -172,33 +223,104 @@ export function ServerProvider({ children }: { children: React.ReactNode }) {
           onPress: () => {
             void (async () => {
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => undefined);
-              setServers((current) => current.map((item) => item.id === id ? { ...item, status: 'restarting' } : item));
-              setLastAction(`${server.name} wird neu gestartet`);
-              setLines((current) => [{ id: `${Date.now()}-restart`, time: nowLabel(), tone: 'warning' as const, text: `Restart requested for ${server.name}` }, ...current].slice(0, 20));
+              setLastAction({ tone: 'info', text: `Asking Crafty to restart ${server.name}…` });
               try {
                 await runCraftyServerAction(id, { action: 'restart_server' satisfies CraftyActionRequestAction });
-                setTimeout(() => void refresh(), 2200);
               } catch (cause) {
-                setServers((current) => current.map((item) => item.id === id ? { ...item, status: 'offline' } : item));
-                setLastAction(cause instanceof Error ? cause.message : 'Restart failed');
+                const text = messageOf(cause, 'Crafty rejected the restart.');
+                setLastAction({ tone: 'error', text });
+                pushLine('error', text);
+                return;
               }
+              restartingIds.current.add(id);
+              setServers((current) => current.map((item) => item.id === id ? { ...item, status: 'restarting' } : item));
+              const accepted = `Crafty accepted a restart for ${server.name}. Waiting for it to report back.`;
+              setLastAction({ tone: 'info', text: accepted });
+              pushLine('warning', accepted);
+              void confirmRestart(server);
             })();
           },
         },
       ],
     );
-  };
+  }, [confirmRestart, pushLine]);
 
-  const runCommand = (command: string) => {
+  const backupServer = useCallback((id: string) => {
+    const server = serversRef.current.find((item) => item.id === id);
+    if (!server) return;
+    Alert.alert(
+      `Back up ${server.name}?`,
+      'Crafty will be asked to create a backup. A new archive is confirmed only after Crafty lists it.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Back up',
+          onPress: () => {
+            void (async () => {
+              setLastAction({ tone: 'info', text: `Asking Crafty to back up ${server.name}…` });
+              let baseline: Set<string> | null = null;
+              try {
+                const before = await listCraftyServerBackups(id);
+                baseline = new Set(before.backups.map((item) => item.id));
+              } catch {
+                baseline = null;
+              }
+              try {
+                await runCraftyServerAction(id, { action: 'backup_server' satisfies CraftyActionRequestAction });
+              } catch (cause) {
+                const text = messageOf(cause, 'Crafty rejected the backup.');
+                setLastAction({ tone: 'error', text });
+                pushLine('error', text);
+                return;
+              }
+              pushLine('warning', `Crafty accepted a backup for ${server.name}.`);
+              if (!baseline) {
+                setLastAction({ tone: 'info', text: `Crafty accepted the backup for ${server.name}. Existing backups could not be listed, so a new archive is not confirmed.` });
+                return;
+              }
+              setLastAction({ tone: 'info', text: `Crafty accepted the backup for ${server.name}. Waiting for a new archive to be listed.` });
+              const deadline = Date.now() + 45_000;
+              while (Date.now() < deadline) {
+                await sleep(3000);
+                try {
+                  const after = await listCraftyServerBackups(id);
+                  const created = after.backups.find((item) => !baseline?.has(item.id));
+                  if (created) {
+                    const text = `Crafty listed a new backup for ${server.name}: ${created.name}.`;
+                    setLastAction({ tone: 'success', text });
+                    pushLine('success', text);
+                    return;
+                  }
+                } catch {
+                  // Keep waiting for a listed archive.
+                }
+              }
+              setLastAction({ tone: 'info', text: `Crafty accepted the backup for ${server.name}, but no new archive is listed yet.` });
+            })();
+          },
+        },
+      ],
+    );
+  }, [pushLine]);
+
+  const runCommand = useCallback(async (command: string) => {
     const trimmed = command.trim();
-    const target = servers.find((server) => server.id === consoleTargetId) ?? servers[0];
-    if (!trimmed || !target) return;
+    const target = serversRef.current.find((server) => server.id === consoleTargetId) ?? serversRef.current[0];
+    if (!trimmed || !target) return false;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => undefined);
-    setLines((current) => [{ id: `${Date.now()}-command`, time: nowLabel(), tone: 'normal' as const, text: `> [${target.name}] ${trimmed}` }, ...current].slice(0, 40));
-    void sendCraftyServerCommand(target.id, { command: trimmed })
-      .then(() => setLastAction(`Befehl an ${target.name} gesendet`))
-      .catch((cause) => setLastAction(cause instanceof Error ? cause.message : 'Command failed'));
-  };
+    try {
+      await sendCraftyServerCommand(target.id, { command: trimmed });
+    } catch (cause) {
+      const text = messageOf(cause, 'Crafty rejected the command.');
+      setLastAction({ tone: 'error', text });
+      pushLine('error', text);
+      return false;
+    }
+    const text = `Crafty accepted "${trimmed}" for ${target.name}.`;
+    setLastAction({ tone: 'success', text });
+    pushLine('success', text);
+    return true;
+  }, [consoleTargetId, pushLine]);
 
   const value = useMemo(
     () => ({
@@ -208,14 +330,16 @@ export function ServerProvider({ children }: { children: React.ReactNode }) {
       isHydrated,
       isLoading,
       error,
+      syncedAt,
       consoleTargetId,
       setConsoleTargetId,
-      refresh,
+      refresh: () => refresh(),
       restartServer,
+      backupServer,
       runCommand,
       clearAction: () => setLastAction(null),
     }),
-    [consoleTargetId, error, isHydrated, isLoading, lastAction, lines, refresh, servers],
+    [backupServer, consoleTargetId, error, isHydrated, isLoading, lastAction, lines, refresh, restartServer, runCommand, servers, syncedAt],
   );
   return <ServerContext.Provider value={value}>{children}</ServerContext.Provider>;
 }

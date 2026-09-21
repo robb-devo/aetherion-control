@@ -1,13 +1,15 @@
 import { Feather } from '@expo/vector-icons';
 import { useLocalSearchParams } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
+  getCraftyServerStats,
   getGetCraftyServerLogsQueryKey,
   getGetCraftyServerStatsQueryKey,
   getListCraftyServerBackupsQueryKey,
   getListCraftyServerPluginsQueryKey,
+  listCraftyServerBackups,
   listCraftyServerFiles,
   useDeleteCraftyServerFile,
   useGetCraftyServerLogs,
@@ -37,7 +39,13 @@ export default function ServerScreen() {
   const { servers, refresh: refreshServers } = useServerControl();
   const server = servers.find((item) => item.id === id);
   const [tab, setTab] = useState<Tab>('Overview');
-  const [actionLabel, setActionLabel] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   const [filePath, setFilePath] = useState('');
   const [files, setFiles] = useState<CraftyFileResponse | null>(null);
   const [fileContent, setFileContent] = useState('');
@@ -49,7 +57,7 @@ export default function ServerScreen() {
   const action = useRunCraftyServerAction();
   const saveFile = useSaveCraftyServerFile();
   const deleteFile = useDeleteCraftyServerFile();
-  const loading = stats.isLoading || action.isPending;
+  const loading = (stats.isLoading && !stats.data) || busy;
 
   const loadPath = async (path: string) => {
     setFileError(null);
@@ -68,24 +76,66 @@ export default function ServerScreen() {
   }, [tab, files]);
 
   const runAction = (nextAction: CraftyActionRequestAction, label: string, warning: string) => {
+    if (!id) return;
     Alert.alert(`${label} ${server?.name ?? 'server'}?`, warning, [
       { text: 'Cancel', style: 'cancel' },
       {
         text: label,
         style: nextAction === 'stop_server' ? 'destructive' : 'default',
         onPress: () => {
-          setActionLabel(label);
-          action.mutate({ id, data: { action: nextAction } }, {
-            onSettled: async () => {
-              setActionLabel(null);
-              await Promise.all([
-                queryClient.invalidateQueries({ queryKey: getGetCraftyServerStatsQueryKey(id) }),
-                queryClient.invalidateQueries({ queryKey: getGetCraftyServerLogsQueryKey(id) }),
-                queryClient.invalidateQueries({ queryKey: getListCraftyServerBackupsQueryKey(id) }),
-                refreshServers(),
-              ]);
-            },
-          });
+          void (async () => {
+            setBusy(true);
+            const say = (text: string) => { if (mounted.current) setNote(text); };
+            say(`Asking Crafty to ${label.toLowerCase()}…`);
+            let backupBaseline: Set<string> | null = null;
+            if (nextAction === 'backup_server') {
+              try {
+                const before = await listCraftyServerBackups(id);
+                backupBaseline = new Set(before.backups.map((item) => item.id));
+              } catch {
+                backupBaseline = null;
+              }
+            }
+            try {
+              await action.mutateAsync({ id, data: { action: nextAction } });
+              if (nextAction === 'backup_server') {
+                if (!backupBaseline) {
+                  say('Crafty accepted the backup. Existing archives could not be listed, so a new one is not confirmed.');
+                } else {
+                  say('Crafty accepted the backup. Waiting for a new archive to be listed.');
+                  const created = await waitForBackup(id, backupBaseline, () => mounted.current);
+                  say(created ? `Crafty listed a new backup: ${created}.` : 'Crafty accepted the backup, but no new archive is listed yet.');
+                }
+              } else if (nextAction === 'restart_server') {
+                say('Crafty accepted the restart. Waiting until the server reports offline, then online.');
+                const outcome = await waitForRestart(id, () => mounted.current);
+                say(outcome === 'online'
+                  ? 'Crafty reports the server online again.'
+                  : outcome === 'offline'
+                    ? 'Crafty accepted the restart. The server is still offline.'
+                    : 'Crafty accepted the restart, but the server never reported offline. It is still running.');
+              } else {
+                const expected = nextAction === 'start_server';
+                say(`Crafty accepted ${label.toLowerCase()}. Waiting for the server to report ${expected ? 'online' : 'offline'}.`);
+                const confirmed = await waitForRunning(id, expected, () => mounted.current);
+                say(confirmed
+                  ? `Crafty reports the server ${expected ? 'online' : 'offline'}.`
+                  : `Crafty accepted ${label.toLowerCase()}, but has not reported the server ${expected ? 'online' : 'offline'} yet.`);
+              }
+              if (mounted.current) {
+                await Promise.all([
+                  queryClient.invalidateQueries({ queryKey: getGetCraftyServerStatsQueryKey(id) }),
+                  queryClient.invalidateQueries({ queryKey: getGetCraftyServerLogsQueryKey(id) }),
+                  queryClient.invalidateQueries({ queryKey: getListCraftyServerBackupsQueryKey(id) }),
+                  refreshServers(),
+                ]);
+              }
+            } catch (cause) {
+              say(cause instanceof Error ? cause.message : 'Crafty did not accept the action.');
+            } finally {
+              if (mounted.current) setBusy(false);
+            }
+          })();
         },
       },
     ]);
@@ -105,40 +155,42 @@ export default function ServerScreen() {
     <View style={[uiStyles.screen, { backgroundColor: colors.background }]}>
       <ScrollView refreshControl={<RefreshControl refreshing={loading} onRefresh={() => void refresh()} tintColor={colors.primary} />} contentContainerStyle={[uiStyles.scroll, { paddingTop: insets.top + 14 }]}>
         <Text style={[styles.kicker, { color: colors.primary }]}>SERVER CONTROL</Text>
-        <View style={styles.titleRow}><View style={{ flex: 1 }}><Text style={[styles.title, { color: colors.foreground }]}>{title}</Text><Text style={[styles.subtitle, { color: colors.mutedForeground }]}>{server?.ip ?? id}</Text></View><View style={[styles.liveDot, { backgroundColor: stats.data?.running ? colors.success : colors.destructive }]} /></View>
+        <View style={styles.titleRow}><View style={{ flex: 1 }}><Text style={[styles.title, { color: colors.foreground }]}>{title}</Text><Text style={[styles.subtitle, { color: colors.mutedForeground }]}>{server?.ip ?? id}</Text></View><View style={[styles.liveDot, { backgroundColor: stats.data ? (stats.data.running ? colors.success : colors.destructive) : colors.mutedForeground }]} /></View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabs}>{tabs.map((item) => <Chip key={item} label={item} active={tab === item} onPress={() => setTab(item)} />)}</ScrollView>
-        {actionLabel ? <View style={[styles.notice, { backgroundColor: colors.accent }]}><Text style={[styles.noticeText, { color: colors.accentForeground }]}>{actionLabel} in progress…</Text></View> : null}
-        {action.error ? <Text style={[styles.error, { color: colors.destructive }]}>{action.error.message}</Text> : null}
-        {tab === 'Overview' ? <Overview stats={stats.data} colors={colors} onAction={runAction} busy={action.isPending} /> : null}
-        {tab === 'Players' ? <ListCard title={`${stats.data?.online ?? 0}/${stats.data?.maxPlayers ?? 0} online`} empty="No players are currently online." items={(stats.data?.players ?? []).map((name) => ({ icon: 'user' as const, title: name, meta: 'Connected now' }))} /> : null}
+        {note ? <View style={[styles.notice, { backgroundColor: colors.accent }]}><Text style={[styles.noticeText, { color: colors.accentForeground }]}>{note}</Text></View> : null}
+        {stats.isError ? <Text style={[styles.error, { color: colors.destructive }]}>{stats.error instanceof Error ? stats.error.message : 'Crafty did not return stats.'}</Text> : null}
+        {tab === 'Overview' ? <Overview stats={stats.data} known={Boolean(stats.data)} colors={colors} onAction={runAction} busy={busy} /> : null}
+        {tab === 'Players' ? <ListCard title={stats.data ? `${stats.data.online}/${stats.data.maxPlayers} reported by Crafty` : 'Players'} empty={stats.data ? 'Crafty did not list any player names.' : 'Player names appear after Crafty returns stats.'} items={(stats.data?.players ?? []).map((name) => ({ icon: 'user' as const, title: name, meta: 'Name reported by Crafty' }))} /> : null}
         {tab === 'Logs' ? <View style={[styles.console, { backgroundColor: colors.card, borderColor: colors.border }]}>{logs.isLoading ? <Empty text="Loading logs…" /> : logs.data?.lines.length ? logs.data.lines.slice(-120).map((line, index) => <Text key={`${index}-${line}`} selectable style={[styles.logLine, { color: colors.mutedForeground }]}>{line}</Text>) : <Empty text="No log lines returned by Crafty." />}</View> : null}
         {tab === 'Files' ? <FilesPanel id={id} path={filePath} result={files} content={fileContent} error={fileError} onContent={setFileContent} onOpen={(path) => void loadPath(path)} onUp={() => void loadPath(filePath.split('/').slice(0, -1).join('/'))} onSave={() => saveFile.mutate({ id, data: { path: filePath, content: fileContent } }, { onSuccess: () => void loadPath(filePath) })} onDelete={(entry) => Alert.alert(`Delete ${entry.name}?`, 'This cannot be undone.', [{ text: 'Cancel', style: 'cancel' }, { text: 'Delete', style: 'destructive', onPress: () => deleteFile.mutate({ id, data: { path: entry.path } }, { onSuccess: () => void loadPath(filePath) }) }])} busy={saveFile.isPending || deleteFile.isPending} /> : null}
         {tab === 'Plugins' ? <ListCard title="Installed extensions" empty="No plugin or mod files were found." items={(plugins.data?.plugins ?? []).map((item) => ({ icon: 'package' as const, title: item.name, meta: `${item.kind} · ${formatBytes(item.size)}` }))} /> : null}
-        {tab === 'Backups' ? <View><PrimaryButton icon="archive" label={action.isPending ? 'Creating backup…' : 'Create backup'} disabled={action.isPending} onPress={() => runAction('backup_server', 'Back up', 'Crafty will create a new server backup.')} /><ListCard title="Available backups" empty="No backups were returned by Crafty." items={(backups.data?.backups ?? []).map((item) => ({ icon: 'hard-drive' as const, title: item.name, meta: `${formatBytes(item.size)}${item.createdAt ? ` · ${new Date(item.createdAt).toLocaleString()}` : ''}` }))} /></View> : null}
+        {tab === 'Backups' ? <View><PrimaryButton icon="archive" label={busy ? 'Waiting for Crafty…' : 'Create backup'} disabled={busy} onPress={() => runAction('backup_server', 'Back up', 'Crafty will be asked to create a backup. A new archive is confirmed only after Crafty lists it.')} /><ListCard title="Available backups" empty="No backups were returned by Crafty." items={(backups.data?.backups ?? []).map((item) => ({ icon: 'hard-drive' as const, title: item.name, meta: `${formatBytes(item.size)}${item.createdAt ? ` · ${new Date(item.createdAt).toLocaleString()}` : ''}` }))} /></View> : null}
       </ScrollView>
     </View>
   );
 }
 
-function Overview({ stats, colors, onAction, busy }: { stats: CraftyStats | undefined; colors: ReturnType<typeof useColors>; onAction: (action: CraftyActionRequestAction, label: string, warning: string) => void; busy: boolean }) {
+function Overview({ stats, known, colors, onAction, busy }: { stats: CraftyStats | undefined; known: boolean; colors: ReturnType<typeof useColors>; onAction: (action: CraftyActionRequestAction, label: string, warning: string) => void; busy: boolean }) {
+  const controlsLocked = busy || !known;
   return (
     <View style={styles.sectionGap}>
       <View style={styles.metricGrid}>
-        <Metric label="CPU" value={stats?.cpu ?? 0} colors={colors} />
-        <Metric label="Memory" value={stats?.memoryPercent ?? 0} colors={colors} />
+        <Metric label="CPU" value={known ? stats?.cpu ?? null : null} colors={colors} />
+        <Metric label="Memory" value={known ? stats?.memoryPercent ?? null : null} colors={colors} />
       </View>
       <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
-        <Row label="Status" value={stats?.running ? 'Online' : 'Offline'} colors={colors} />
-        <Row label="Version" value={stats?.version ?? 'Unknown'} colors={colors} />
-        <Row label="Players" value={`${stats?.online ?? 0}/${stats?.maxPlayers ?? 0}`} colors={colors} />
-        <Row label="Memory" value={stats?.memory ?? '—'} colors={colors} />
-        <Row label="Uptime" value={stats?.uptime ?? '—'} colors={colors} />
-        <Row label="World" value={stats?.worldSize ?? '—'} colors={colors} />
+        <Row label="Status" value={known ? (stats?.running ? 'Online' : 'Offline') : 'Not reported'} colors={colors} />
+        <Row label="Version" value={known ? (stats?.version || '—') : '—'} colors={colors} />
+        <Row label="Players" value={known ? `${stats?.online ?? '—'}/${stats?.maxPlayers ?? '—'}` : '—'} colors={colors} />
+        <Row label="Memory" value={known ? (stats?.memory || '—') : '—'} colors={colors} />
+        <Row label="Uptime" value={known ? (stats?.uptime || '—') : '—'} colors={colors} />
+        <Row label="World" value={known ? (stats?.worldSize || '—') : '—'} colors={colors} />
       </View>
+      {!known ? <Text style={[styles.empty, { color: colors.mutedForeground }]}>Start, stop, and restart stay off until Crafty reports status.</Text> : null}
       <View style={styles.actions}>
-        <PrimaryButton icon="play" label="Start" disabled={busy || !!stats?.running} onPress={() => onAction('start_server', 'Start', 'Crafty will start this server.')} />
-        <PrimaryButton icon="square" label="Stop" disabled={busy || !stats?.running} onPress={() => onAction('stop_server', 'Stop', 'Connected players will be disconnected.')} />
-        <PrimaryButton icon="rotate-cw" label="Restart" disabled={busy || !stats?.running} onPress={() => onAction('restart_server', 'Restart', 'Connected players may be disconnected.')} />
+        <PrimaryButton icon="play" label="Start" disabled={controlsLocked || !!stats?.running} onPress={() => onAction('start_server', 'Start', 'Crafty will be asked to start this server. Online is confirmed only after Crafty reports it running.')} />
+        <PrimaryButton icon="square" label="Stop" disabled={controlsLocked || !stats?.running} onPress={() => onAction('stop_server', 'Stop', 'Crafty will be asked to stop this server. Connected players will be disconnected. Offline is confirmed only after Crafty reports it stopped.')} />
+        <PrimaryButton icon="rotate-cw" label="Restart" disabled={controlsLocked || !stats?.running} onPress={() => onAction('restart_server', 'Restart', 'Crafty will be asked to restart this server. Done means Crafty reports it offline, then online again.')} />
       </View>
     </View>
   );
@@ -155,20 +207,76 @@ function ListCard({ title, empty, items }: { title: string; empty: string; items
   return <View style={styles.sectionGap}><Text style={[styles.sectionTitle, { color: colors.foreground }]}>{title}</Text><View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>{items.length ? items.map((item, index) => <View key={`${item.title}-${index}`} style={styles.item}><Feather name={item.icon} size={17} color={colors.primary} /><View style={{ flex: 1 }}><Text style={[styles.itemTitle, { color: colors.foreground }]}>{item.title}</Text><Text style={[styles.itemMeta, { color: colors.mutedForeground }]}>{item.meta}</Text></View></View>) : <Empty text={empty} />}</View></View>;
 }
 
-function Metric({ label, value, colors }: { label: string; value: number; colors: ReturnType<typeof useColors> }) {
-  // Crafty values are already percentages.
-  const normalized = Math.max(0, Math.min(100, Math.round(Number.isFinite(value) ? value : 0)));
+function Metric({ label, value, colors }: { label: string; value: number | null; colors: ReturnType<typeof useColors> }) {
+  const normalized = value == null || !Number.isFinite(value) ? null : Math.max(0, Math.min(100, Math.round(value * 10) / 10));
   return (
     <View style={[styles.metricCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-      <Text style={[styles.metricValue, { color: colors.foreground }]}>{normalized}%</Text>
+      <Text style={[styles.metricValue, { color: colors.foreground }]}>{normalized == null ? '—' : `${normalized}%`}</Text>
       <Text style={[styles.itemMeta, { color: colors.mutedForeground }]}>{label}</Text>
-      <MetricBar value={normalized} color={normalized > 80 ? colors.warning : colors.primary} />
+      {normalized != null ? <MetricBar value={normalized} color={normalized > 80 ? colors.warning : colors.primary} /> : null}
     </View>
   );
 }
 function Row({ label, value, colors }: { label: string; value: string; colors: ReturnType<typeof useColors> }) { return <View style={styles.row}><Text style={[styles.itemMeta, { color: colors.mutedForeground }]}>{label}</Text><Text style={[styles.rowValue, { color: colors.foreground }]}>{value}</Text></View>; }
 function Empty({ text }: { text: string }) { const colors = useColors(); return <Text style={[styles.empty, { color: colors.mutedForeground }]}>{text}</Text>; }
 function formatBytes(value: number) { if (!value) return 'Size unavailable'; const units = ['B', 'KB', 'MB', 'GB']; const unit = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1); return `${(value / 1024 ** unit).toFixed(unit ? 1 : 0)} ${units[unit]}`; }
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForRunning(id: string, expected: boolean, alive: () => boolean) {
+  for (let attempt = 0; attempt < 15; attempt += 1) {
+    await sleep(3000);
+    if (!alive()) return false;
+    try {
+      const stats = await getCraftyServerStats(id);
+      if (stats.running === expected) return true;
+    } catch {
+      // A failed poll is not a state change.
+    }
+  }
+  return false;
+}
+
+async function waitForRestart(id: string, alive: () => boolean): Promise<'online' | 'offline' | 'still-running'> {
+  let sawStopped = false;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    await sleep(3000);
+    if (!alive()) return sawStopped ? 'offline' : 'still-running';
+    try {
+      const stats = await getCraftyServerStats(id);
+      if (!stats.running) sawStopped = true;
+      else if (sawStopped) return 'online';
+    } catch {
+      // Keep waiting for Crafty.
+    }
+  }
+  try {
+    const stats = await getCraftyServerStats(id);
+    if (stats.running && sawStopped) return 'online';
+    if (!stats.running) return 'offline';
+  } catch {
+    return sawStopped ? 'offline' : 'still-running';
+  }
+  return 'still-running';
+}
+
+async function waitForBackup(id: string, baseline: Set<string>, alive: () => boolean) {
+  const deadline = Date.now() + 45_000;
+  while (Date.now() < deadline) {
+    await sleep(3000);
+    if (!alive()) return null;
+    try {
+      const after = await listCraftyServerBackups(id);
+      const created = after.backups.find((item) => !baseline.has(item.id));
+      if (created) return created.name;
+    } catch {
+      // Keep waiting for the archive list.
+    }
+  }
+  return null;
+}
 
 const styles = StyleSheet.create({
   kicker: { fontFamily: 'Inter_700Bold', fontSize: 10, letterSpacing: 2, marginBottom: 7 },

@@ -6,6 +6,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useColors } from '@/hooks/useColors';
 import { useServerControl, type MinecraftServer } from '@/context/ServerContext';
 import { MetricBar, PrimaryButton, SectionTitle, StatusDot, uiStyles } from '@/components/ControlUI';
+import { formatPercent, summarizeServers } from '@/lib/liveServers';
 import { useListHetznerDedicatedServers } from '@workspace/api-client-react';
 
 export default function ServersScreen() {
@@ -13,12 +14,12 @@ export default function ServersScreen() {
   const insets = useSafeAreaInsets();
   const { servers, restartServer, isLoading, error, refresh } = useServerControl();
   const hostsQuery = useListHetznerDedicatedServers();
-  const averageCpu = servers.length ? Math.round(servers.reduce((sum, server) => sum + server.cpu, 0) / servers.length) : 0;
+  const summary = summarizeServers(servers);
   return (
     <View style={[uiStyles.screen, { backgroundColor: colors.background }]}>
       <ScrollView refreshControl={<RefreshControl refreshing={isLoading || hostsQuery.isRefetching} onRefresh={() => void Promise.all([refresh(), hostsQuery.refetch()])} tintColor={colors.primary} colors={[colors.primary]} />} contentContainerStyle={[uiStyles.scroll, { paddingTop: insets.top + 16 }]}>
         <View style={styles.header}><View><Text style={[styles.kicker, { color: colors.primary }]}>INFRASTRUCTURE</Text><Text style={[styles.title, { color: colors.foreground }]}>Your servers</Text><Text style={[styles.subtitle, { color: colors.mutedForeground }]}>Live health and capacity at a glance.</Text></View><View style={[styles.countBadge, { backgroundColor: colors.accent }]}><Text style={[styles.countText, { color: colors.accentForeground }]}>{servers.length} nodes</Text></View></View>
-        <View style={styles.summaryRow}><Summary label="Online" value={String(servers.filter((server) => server.status === 'online').length)} color={colors.success} /><Summary label="Players" value={String(servers.reduce((sum, server) => sum + server.players, 0))} color={colors.info} /><Summary label="Avg. CPU" value={`${averageCpu}%`} color={colors.warning} /></View>
+        <View style={styles.summaryRow}><Summary label="Online" value={String(summary.online)} color={colors.success} /><Summary label="Players" value={summary.players == null ? '—' : String(summary.players)} color={colors.info} /><Summary label="Avg. CPU" value={formatPercent(summary.averageCpu)} color={colors.warning} /></View>
         {error ? <View style={[styles.errorCard, { backgroundColor: colors.secondary, borderColor: colors.destructive }]}><Feather name="alert-circle" size={16} color={colors.destructive} /><Text style={[styles.errorText, { color: colors.foreground }]}>{error}</Text></View> : null}
         <SectionTitle title="All nodes" eyebrow="LIVE STATUS" />
         <View style={styles.list}>{servers.map((server) => <ServerDetail key={server.id} server={server} onOpen={() => router.push(`/server/${server.id}` as never)} onRestart={() => restartServer(server.id)} />)}</View>
@@ -51,13 +52,35 @@ function Summary({ label, value, color }: { label: string; value: string; color:
 
 function ServerDetail({ server, onRestart, onOpen }: { server: MinecraftServer; onRestart: () => void; onOpen: () => void }) {
   const colors = useColors();
-  const statusLabel = server.status === 'online' ? 'Operational' : server.status === 'degraded' ? 'Needs attention' : server.status === 'restarting' ? 'Restarting…' : 'Offline';
-  return <Pressable onPress={onOpen} style={({ pressed }) => [styles.serverCard, { backgroundColor: colors.card, borderColor: colors.border, opacity: pressed ? 0.82 : 1 }]}><View style={styles.serverTop}><View style={[styles.nodeIcon, { backgroundColor: server.status === 'degraded' ? colors.secondary : colors.accent }]}><Feather name={server.tag === 'EDGE' ? 'shuffle' : 'box'} size={20} color={server.status === 'degraded' ? colors.warning : colors.primary} /></View><View style={{ flex: 1 }}><View style={styles.nameRow}><Text style={[styles.serverName, { color: colors.foreground }]}>{server.name}</Text><Text style={[styles.serverTag, { color: colors.mutedForeground }]}>{server.tag}</Text></View><View style={styles.statusRow}><StatusDot status={server.status} /><Text style={[styles.statusText, { color: server.status === 'degraded' ? colors.warning : colors.success }]}>{statusLabel}</Text></View></View><Pressable onPress={(event) => { event.stopPropagation(); onRestart(); }} hitSlop={10} style={({ pressed }) => [styles.restartButton, { backgroundColor: colors.secondary }, pressed && { opacity: 0.7 }]}><Feather name="rotate-cw" size={15} color={colors.foreground} /></Pressable></View><View style={styles.serverMetrics}><Metric label="CPU" value={server.cpu} color={server.cpu > 65 ? colors.warning : colors.primary} /><Metric label="RAM" value={server.ram} color={server.ram > 70 ? colors.warning : colors.info} /><Metric label="Slots" value={server.maxPlayers ? Math.round((server.players / server.maxPlayers) * 100) : 0} color={colors.success} /></View><View style={styles.detailFooter}><Text style={[styles.footerText, { color: colors.mutedForeground }]}>{server.players}/{server.maxPlayers} players · {server.ip}</Text><Text style={[styles.footerText, { color: colors.mutedForeground }]}>{server.uptime}{server.memoryLabel ? ` · ${server.memoryLabel}` : ''}</Text></View>{server.status === 'restarting' ? <View style={{ marginTop: 13 }}><PrimaryButton label="Restarting server…" disabled /></View> : null}</Pressable>;
+  const statusLabel = server.status === 'online' ? 'Operational' : server.status === 'restarting' ? 'Waiting for Crafty…' : server.status === 'unknown' ? 'Stats unavailable' : 'Offline';
+  const statusColor = server.status === 'online' ? colors.success : server.status === 'restarting' ? colors.info : server.status === 'unknown' ? colors.mutedForeground : colors.destructive;
+  const slots = server.players != null && server.maxPlayers ? Math.round((server.players / server.maxPlayers) * 100) : null;
+  return (
+    <Pressable onPress={onOpen} style={({ pressed }) => [styles.serverCard, { backgroundColor: colors.card, borderColor: colors.border, opacity: pressed ? 0.82 : 1 }]}>
+      <View style={styles.serverTop}>
+        <View style={[styles.nodeIcon, { backgroundColor: server.status === 'offline' ? colors.secondary : colors.accent }]}><Feather name={server.tag === 'EDGE' ? 'shuffle' : 'box'} size={20} color={server.status === 'offline' ? colors.destructive : colors.primary} /></View>
+        <View style={{ flex: 1 }}>
+          <View style={styles.nameRow}><Text style={[styles.serverName, { color: colors.foreground }]}>{server.name}</Text><Text style={[styles.serverTag, { color: colors.mutedForeground }]}>{server.tag}</Text></View>
+          <View style={styles.statusRow}><StatusDot status={server.status} /><Text style={[styles.statusText, { color: statusColor }]}>{statusLabel}{server.metricsKnown && !server.statsFresh ? ' · cached' : ''}</Text></View>
+        </View>
+        <Pressable onPress={(event) => { event.stopPropagation(); onRestart(); }} hitSlop={10} style={({ pressed }) => [styles.restartButton, { backgroundColor: colors.secondary }, pressed && { opacity: 0.7 }]}><Feather name="rotate-cw" size={15} color={colors.foreground} /></Pressable>
+      </View>
+      {server.metricsKnown ? (
+        <View style={styles.serverMetrics}>
+          <Metric label="CPU" value={server.cpu} color={(server.cpu ?? 0) > 80 ? colors.warning : colors.primary} />
+          <Metric label="RAM" value={server.ram} color={(server.ram ?? 0) > 80 ? colors.warning : colors.info} />
+          <Metric label="Slots" value={slots} color={colors.success} />
+        </View>
+      ) : <Text style={[styles.footerText, { color: colors.mutedForeground, marginTop: 14 }]}>Crafty did not return stats for this server.</Text>}
+      <View style={styles.detailFooter}><Text style={[styles.footerText, { color: colors.mutedForeground }]}>{server.metricsKnown ? `${server.players ?? '—'}/${server.maxPlayers ?? '—'} players · ${server.ip}` : server.ip}</Text><Text style={[styles.footerText, { color: colors.mutedForeground }]}>{server.uptime ?? '—'}{server.memoryLabel ? ` · ${server.memoryLabel}` : ''}</Text></View>
+      {server.status === 'restarting' ? <View style={{ marginTop: 13 }}><PrimaryButton label="Waiting for Crafty…" disabled /></View> : null}
+    </Pressable>
+  );
 }
 
-function Metric({ label, value, color }: { label: string; value: number; color: string }) {
+function Metric({ label, value, color }: { label: string; value: number | null; color: string }) {
   const colors = useColors();
-  return <View style={styles.metric}><View style={styles.metricHeader}><Text style={[styles.metricLabel, { color: colors.mutedForeground }]}>{label}</Text><Text style={[styles.metricValue, { color: colors.foreground }]}>{value}%</Text></View><MetricBar value={value} color={color} /></View>;
+  return <View style={styles.metric}><View style={styles.metricHeader}><Text style={[styles.metricLabel, { color: colors.mutedForeground }]}>{label}</Text><Text style={[styles.metricValue, { color: colors.foreground }]}>{formatPercent(value)}</Text></View>{value != null ? <MetricBar value={value} color={color} /> : null}</View>;
 }
 
 const styles = StyleSheet.create({

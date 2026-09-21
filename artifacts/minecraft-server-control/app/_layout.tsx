@@ -13,12 +13,17 @@ import {
 } from '@expo-google-fonts/inter';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
+import { AppUpdateProvider } from '@/context/AppUpdate';
 import { ControlAuthProvider, useControlAuth } from '@/context/ControlAuth';
 import { ServerProvider } from '@/context/ServerContext';
 
 SplashScreen.preventAutoHideAsync();
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: { retry: 1, refetchOnWindowFocus: false },
+  },
+});
 
 function RootLayoutNav() {
   return (
@@ -67,9 +72,11 @@ export default function RootLayout() {
           <GestureHandlerRootView style={{ flex: 1 }}>
             <KeyboardProvider>
               <ControlAuthProvider>
-                <ServerProvider>
-                  <AuthenticatedShell />
-                </ServerProvider>
+                <AppUpdateProvider>
+                  <ServerProvider>
+                    <AuthenticatedShell />
+                  </ServerProvider>
+                </AppUpdateProvider>
               </ControlAuthProvider>
             </KeyboardProvider>
           </GestureHandlerRootView>

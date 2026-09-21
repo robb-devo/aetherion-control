@@ -18,7 +18,7 @@ export function SectionTitle({ eyebrow, title, action, onAction }: { eyebrow?: s
 
 export function StatusDot({ status }: { status: string }) {
   const colors = useColors();
-  const color = status === 'online' ? colors.success : status === 'degraded' ? colors.warning : status === 'restarting' ? colors.info : colors.destructive;
+  const color = status === 'online' ? colors.success : status === 'degraded' ? colors.warning : status === 'restarting' ? colors.info : status === 'unknown' ? colors.mutedForeground : colors.destructive;
   return <View style={[styles.statusDot, { backgroundColor: color }]} />;
 }
 
