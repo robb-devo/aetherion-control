@@ -1,0 +1,1 @@
+- [Crafty file API coverage](crafty-file-api.md) — Crafty’s official v2 spec omits file and backup routes that exist in current controllers; verify against controller behavior.
