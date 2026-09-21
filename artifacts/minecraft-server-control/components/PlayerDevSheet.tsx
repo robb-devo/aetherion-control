@@ -83,7 +83,7 @@ export function PlayerDevSheet({ visible, serverId, player, onClose }: Props) {
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <View style={styles.backdrop}>
-        <Pressable style={StyleSheet.absoluteFillObject} onPress={onClose} />
+        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
         <View style={[styles.sheet, { backgroundColor: colors.card, borderColor: colors.border }]}>
           <ScrollView keyboardShouldPersistTaps="handled" bounces={false}>
             <View style={styles.handle} />

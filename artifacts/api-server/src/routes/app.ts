@@ -12,7 +12,8 @@ const downloadTickets = new Map<string, { url: string; expiresAt: number }>();
 type GhRelease = {
   tag_name?: string;
   body?: string;
-  assets?: Array<{ name?: string; browser_download_url?: string; url?: string }>;
+  html_url?: string;
+  assets?: Array<{ name?: string; browser_download_url?: string; url?: string; size?: number }>;
 };
 
 function githubToken() {
@@ -25,6 +26,8 @@ async function fetchLatestRelease(): Promise<{
   notes: string;
   assetApiUrl: string;
   assetName: string;
+  size: number;
+  pageUrl: string;
 } | null> {
   const token = githubToken();
   if (!token) return null;
@@ -50,6 +53,8 @@ async function fetchLatestRelease(): Promise<{
     notes: (data.body ?? "").trim().slice(0, 400),
     assetApiUrl: apk.url,
     assetName: apk.name ?? "aetherion.apk",
+    size: typeof apk.size === "number" && apk.size > 0 ? apk.size : 0,
+    pageUrl: data.html_url ?? `https://github.com/${REPO}/releases/tag/${encodeURIComponent(tag)}`,
   };
 }
 
@@ -77,6 +82,8 @@ router.get("/app/latest", requireAuth, requirePermission("app.update"), async (r
       version: latest.version,
       notes: latest.notes,
       apkName: latest.assetName,
+      size: latest.size,
+      pageUrl: latest.pageUrl,
       // Short-lived URL — phone can open it without a Bearer header.
       apkUrl: `${proto}://${host}/api/app/apk?t=${ticket}`,
     });

@@ -1,7 +1,9 @@
 import { Feather } from '@expo/vector-icons';
-import React, { useState } from 'react';
+import { usePathname } from 'expo-router';
+import React, { useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { getGetCraftyServerLogsQueryKey, useGetCraftyServerLogs } from '@workspace/api-client-react';
 import { useColors } from '@/hooks/useColors';
 import { useServerControl } from '@/context/ServerContext';
 import { Chip, SectionTitle, uiStyles } from '@/components/ControlUI';
@@ -9,12 +11,37 @@ import { Chip, SectionTitle, uiStyles } from '@/components/ControlUI';
 export default function ConsoleScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
-  const { lines, runCommand, servers, isLoading, error, consoleTargetId, setConsoleTargetId } = useServerControl();
+  const pathname = usePathname();
+  const visible = pathname === '/console';
+  const { runCommand, servers, isLoading, error, consoleTargetId, setConsoleTargetId, consoleDraft, clearConsoleDraft } = useServerControl();
   const target = servers.find((server) => server.id === consoleTargetId) ?? servers[0];
   const [command, setCommand] = useState('');
+  const [delivery, setDelivery] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!consoleDraft) return;
+    setCommand(consoleDraft);
+    clearConsoleDraft();
+  }, [clearConsoleDraft, consoleDraft]);
+
+  const logs = useGetCraftyServerLogs(target?.id ?? 'none', {
+    query: {
+      queryKey: getGetCraftyServerLogsQueryKey(target?.id ?? 'none'),
+      enabled: visible && Boolean(target?.id),
+      refetchInterval: visible ? 5000 : false,
+    },
+  });
+  const logLines = logs.data?.lines.slice(-80) ?? [];
   const send = () => {
-    runCommand(command);
-    setCommand('');
+    const pending = command;
+    if (!pending.trim()) return;
+    setDelivery(null);
+    void runCommand(pending).then((accepted) => {
+      if (!accepted) return;
+      setCommand('');
+      setDelivery(`Crafty accepted "${pending.trim()}". It shows up here when Crafty returns it in the log.`);
+      void logs.refetch();
+    });
   };
 
   return (
@@ -28,22 +55,22 @@ export default function ConsoleScreen() {
                 {error
                   ? 'Crafty unavailable'
                   : target
-                    ? `${target.name} · live Crafty logs`
+                    ? `${target.name} · Crafty logs`
                     : isLoading
                       ? 'Connecting…'
                       : 'No server available'}
               </Text>
             </View>
             <View style={[styles.connected, { backgroundColor: colors.accent }]}>
-              <View style={[styles.connectedDot, { backgroundColor: target?.status === 'online' ? colors.success : colors.warning }]} />
+              <View style={[styles.connectedDot, { backgroundColor: target?.status === 'online' ? colors.success : target?.status === 'offline' ? colors.destructive : colors.warning }]} />
               <Text style={[styles.connectedText, { color: colors.accentForeground }]}>
-                {target?.status === 'online' ? 'LIVE' : 'IDLE'}
+                {target?.status === 'online' ? 'LIVE' : target?.status === 'offline' ? 'OFF' : 'IDLE'}
               </Text>
             </View>
           </View>
 
           <Text style={[styles.hint, { color: colors.mutedForeground }]}>
-            1) Pick a server above · 2) Type a command (no /) · 3) Send — output streams from Crafty logs.
+            1) Pick a server · 2) Type a command (no /) · 3) Send — the field clears only after Crafty accepts it.
           </Text>
 
           <View style={styles.chips}>
@@ -63,30 +90,15 @@ export default function ConsoleScreen() {
               <Feather name="maximize-2" size={14} color="#6E7C8B" />
             </View>
             <View style={styles.logArea}>
-              {lines.slice(0, 28).reverse().map((line) => (
-                <View key={line.id} style={styles.logRow}>
-                  <Text style={styles.logTime}>{line.time}</Text>
-                  <Text
-                    selectable
-                    style={[
-                      styles.logText,
-                      {
-                        color:
-                          line.tone === 'success'
-                            ? '#8FF0D6'
-                            : line.tone === 'warning'
-                              ? '#F6C85F'
-                              : line.tone === 'error'
-                                ? '#FF6B6B'
-                                : '#C7D0DA',
-                      },
-                    ]}
-                  >
-                    {line.text}
-                  </Text>
-                </View>
+              {!target ? <Text style={styles.logText}>No Crafty server is selected.</Text> : null}
+              {target && logs.isLoading && !logs.data ? <Text style={styles.logText}>Loading logs from Crafty…</Text> : null}
+              {logs.isError ? <Text style={[styles.logText, { color: '#FF6B6B' }]}>{logs.error instanceof Error ? logs.error.message : 'Crafty did not return logs.'}</Text> : null}
+              {target && logs.isFetched && !logs.isError && logLines.length === 0 ? <Text style={styles.logText}>Crafty returned no log lines for this server.</Text> : null}
+              {logLines.map((line, index) => (
+                <Text key={`${index}-${line.slice(0, 24)}`} selectable style={styles.logText}>{line}</Text>
               ))}
             </View>
+            {delivery ? <Text style={styles.delivery}>{delivery}</Text> : null}
             <View style={styles.commandRow}>
               <Text style={styles.prompt}>›</Text>
               <TextInput
@@ -118,7 +130,7 @@ export default function ConsoleScreen() {
           <SectionTitle title="Command shortcuts" eyebrow="FREQUENTLY USED" />
           <View style={styles.chips}>
             {['list', 'save-all', 'tps', 'say Maintenance in 10m'].map((item) => (
-              <Chip key={item} label={`/${item}`} onPress={() => setCommand(item)} />
+              <Chip key={item} label={item} onPress={() => setCommand(item)} />
             ))}
           </View>
         </ScrollView>
@@ -140,10 +152,9 @@ const styles = StyleSheet.create({
   windowDots: { flexDirection: 'row', gap: 5 },
   windowDot: { width: 7, height: 7, borderRadius: 4 },
   consoleTitle: { flex: 1, color: '#8795A5', fontFamily: 'Inter_500Medium', fontSize: 11 },
-  logArea: { padding: 14, gap: 10, minHeight: 280 },
-  logRow: { flexDirection: 'row', gap: 10 },
-  logTime: { color: '#627080', fontFamily: 'Inter_500Medium', fontSize: 10, width: 52 },
-  logText: { flex: 1, fontFamily: 'Inter_400Regular', fontSize: 11, lineHeight: 16 },
+  logArea: { padding: 14, gap: 8, minHeight: 280 },
+  logText: { color: '#C7D0DA', fontFamily: 'Inter_400Regular', fontSize: 11, lineHeight: 16 },
+  delivery: { color: '#8FF0D6', fontFamily: 'Inter_400Regular', fontSize: 11, lineHeight: 16, paddingHorizontal: 14, paddingBottom: 8 },
   commandRow: { borderTopWidth: 1, borderTopColor: '#26313B', flexDirection: 'row', alignItems: 'center', padding: 10, gap: 8 },
   prompt: { color: '#B7F34A', fontFamily: 'Inter_700Bold', fontSize: 20 },
   input: { flex: 1, color: '#F5F7FA', fontFamily: 'Inter_400Regular', fontSize: 12, minHeight: 34 },

@@ -1,6 +1,6 @@
 {
   "name": "@workspace/minecraft-server-control",
-  "version": "0.0.0",
+  "version": "1.0.15",
   "private": true,
   "main": "expo-router/entry",
   "scripts": {
@@ -8,7 +8,8 @@
     "android": "expo run:android",
     "build": "node scripts/build.js",
     "serve": "node server/serve.js",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --experimental-strip-types --test lib/*.test.ts"
   },
   "dependencies": {
     "@expo-google-fonts/inter": "^0.4.0",
@@ -21,11 +22,13 @@
     "expo-blur": "~57.0.2",
     "expo-constants": "~57.0.6",
     "expo-crypto": "57.0.3",
+    "expo-file-system": "~57.0.7",
     "expo-font": "~57.0.1",
     "expo-glass-effect": "~57.0.1",
     "expo-haptics": "~57.0.1",
     "expo-image": "~57.0.1",
     "expo-image-picker": "~57.0.5",
+    "expo-intent-launcher": "~57.0.1",
     "expo-linear-gradient": "~57.0.1",
     "expo-linking": "~57.0.3",
     "expo-location": "~57.0.5",
