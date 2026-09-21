@@ -1,8 +1,8 @@
-{
+﻿{
   "expo": {
     "name": "AETHERION",
     "slug": "minecraft-server-control",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "minecraft-server-control",
@@ -12,7 +12,7 @@
     },
     "android": {
       "package": "com.aetherion.control",
-      "versionCode": 3,
+      "versionCode": 4,
       "supportsTablet": false,
       "usesCleartextTraffic": true,
       "adaptiveIcon": {
@@ -25,7 +25,8 @@
     },
     "plugins": [
       "expo-router",
-      "expo-secure-store"
+      "expo-secure-store",
+      "./plugins/withCleartextTraffic.js"
     ],
     "experiments": {
       "typedRoutes": true,
