@@ -2,8 +2,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Haptics from 'expo-haptics';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { Alert } from 'react-native';
-import { useAuth } from '@clerk/expo';
 import { runCraftyServerAction, sendCraftyServerCommand, listCraftyServers, getCraftyServerStats, type CraftyActionRequestAction, type CraftyServer, type CraftyStats } from '@workspace/api-client-react';
+import { useControlAuth } from '@/context/ControlAuth';
 
 export type ServerStatus = 'online' | 'degraded' | 'offline' | 'restarting';
 
@@ -42,6 +42,8 @@ type ServerContextValue = {
   isHydrated: boolean;
   isLoading: boolean;
   error: string | null;
+  consoleTargetId: string | null;
+  setConsoleTargetId: (id: string) => void;
   refresh: () => Promise<void>;
   restartServer: (id: string) => void;
   runCommand: (command: string) => void;
@@ -83,13 +85,14 @@ function toMinecraftServer(server: CraftyServer, stats: CraftyStats | null): Min
 }
 
 export function ServerProvider({ children }: { children: React.ReactNode }) {
-  const { isSignedIn } = useAuth();
+  const { isUnlocked } = useControlAuth();
   const [servers, setServers] = useState<MinecraftServer[]>([]);
   const [lines, setLines] = useState<ConsoleLine[]>(initialLines);
   const [lastAction, setLastAction] = useState<string | null>(null);
   const [isHydrated, setIsHydrated] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [consoleTargetId, setConsoleTargetId] = useState<string | null>(null);
 
   useEffect(() => {
     AsyncStorage.getItem(STORAGE_KEY)
@@ -116,6 +119,14 @@ export function ServerProvider({ children }: { children: React.ReactNode }) {
         }
       }));
       setServers(liveServers);
+      setConsoleTargetId((current) => {
+        if (current && liveServers.some((server) => server.id === current)) return current;
+        const preferred =
+          liveServers.find((server) => /mmo-r/i.test(server.name)) ??
+          liveServers.find((server) => server.tag === 'PLAY') ??
+          liveServers[0];
+        return preferred?.id ?? null;
+      });
       setLines((current) => current[0]?.text === initialLines[0].text ? [{ id: `${Date.now()}-connected`, time: nowLabel(), tone: 'success', text: `Connected to Crafty · ${liveServers.length} servers loaded` }] : current);
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : 'Crafty could not be reached.';
@@ -127,13 +138,13 @@ export function ServerProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (isHydrated && isSignedIn) {
+    if (isHydrated && isUnlocked) {
       void refresh();
-    } else if (isHydrated && !isSignedIn) {
+    } else if (isHydrated && !isUnlocked) {
       setIsLoading(false);
       setError(null);
     }
-  }, [isHydrated, isSignedIn, refresh]);
+  }, [isHydrated, isUnlocked, refresh]);
 
   useEffect(() => {
     if (!isHydrated) return;
@@ -173,16 +184,32 @@ export function ServerProvider({ children }: { children: React.ReactNode }) {
 
   const runCommand = (command: string) => {
     const trimmed = command.trim();
-    const target = servers.find((server) => server.tag === 'EDGE') ?? servers[0];
+    const target = servers.find((server) => server.id === consoleTargetId) ?? servers[0];
     if (!trimmed || !target) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => undefined);
-    setLines((current) => [{ id: `${Date.now()}-command`, time: nowLabel(), tone: 'normal' as const, text: `> ${trimmed}` }, ...current].slice(0, 20));
+    setLines((current) => [{ id: `${Date.now()}-command`, time: nowLabel(), tone: 'normal' as const, text: `> [${target.name}] ${trimmed}` }, ...current].slice(0, 40));
     void sendCraftyServerCommand(target.id, { command: trimmed })
       .then(() => setLastAction(`Befehl an ${target.name} gesendet`))
       .catch((cause) => setLastAction(cause instanceof Error ? cause.message : 'Command failed'));
   };
 
-  const value = useMemo(() => ({ servers, lines, lastAction, isHydrated, isLoading, error, refresh, restartServer, runCommand, clearAction: () => setLastAction(null) }), [error, isHydrated, isLoading, lastAction, lines, refresh, servers]);
+  const value = useMemo(
+    () => ({
+      servers,
+      lines,
+      lastAction,
+      isHydrated,
+      isLoading,
+      error,
+      consoleTargetId,
+      setConsoleTargetId,
+      refresh,
+      restartServer,
+      runCommand,
+      clearAction: () => setLastAction(null),
+    }),
+    [consoleTargetId, error, isHydrated, isLoading, lastAction, lines, refresh, servers],
+  );
   return <ServerContext.Provider value={value}>{children}</ServerContext.Provider>;
 }
 

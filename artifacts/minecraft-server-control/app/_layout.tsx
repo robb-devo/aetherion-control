@@ -13,36 +13,27 @@ import {
 } from '@expo-google-fonts/inter';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
-import { ClerkLoaded, ClerkProvider, useAuth } from '@clerk/expo';
-import { tokenCache } from '@clerk/expo/token-cache';
-import { setAuthTokenGetter, setBaseUrl } from '@workspace/api-client-react';
+import { ControlAuthProvider, useControlAuth } from '@/context/ControlAuth';
 import { ServerProvider } from '@/context/ServerContext';
 
-// Prevent the splash screen from auto-hiding before asset loading is complete.
 SplashScreen.preventAutoHideAsync();
 
 const queryClient = new QueryClient();
-
-const apiDomain = process.env.EXPO_PUBLIC_DOMAIN;
-if (apiDomain) setBaseUrl(`https://${apiDomain}`);
 
 function RootLayoutNav() {
   return (
     <Stack screenOptions={{ headerBackTitle: 'Back' }}>
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+      <Stack.Screen name="server/[id]" options={{ title: 'Server', headerShown: true }} />
     </Stack>
   );
 }
 
 function AuthenticatedShell() {
-  const { isSignedIn, getToken } = useAuth();
+  const { isReady, isUnlocked } = useControlAuth();
+  if (!isReady) return null;
 
-  useEffect(() => {
-    setAuthTokenGetter(() => getToken());
-    return () => setAuthTokenGetter(null);
-  }, [getToken]);
-
-  if (!isSignedIn) {
+  if (!isUnlocked) {
     return (
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="(auth)" />
@@ -70,26 +61,20 @@ export default function RootLayout() {
   if (!fontsLoaded && !fontError) return null;
 
   return (
-    <ClerkProvider
-      publishableKey={process.env.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY ?? ''}
-      tokenCache={tokenCache}
-      proxyUrl={process.env.EXPO_PUBLIC_CLERK_PROXY_URL || undefined}
-    >
-      <ClerkLoaded>
-        <SafeAreaProvider>
-          <ErrorBoundary>
-            <QueryClientProvider client={queryClient}>
-              <GestureHandlerRootView style={{ flex: 1 }}>
-                <KeyboardProvider>
-                  <ServerProvider>
-                    <AuthenticatedShell />
-                  </ServerProvider>
-                </KeyboardProvider>
-              </GestureHandlerRootView>
-            </QueryClientProvider>
-          </ErrorBoundary>
-        </SafeAreaProvider>
-      </ClerkLoaded>
-    </ClerkProvider>
+    <SafeAreaProvider>
+      <ErrorBoundary>
+        <QueryClientProvider client={queryClient}>
+          <GestureHandlerRootView style={{ flex: 1 }}>
+            <KeyboardProvider>
+              <ControlAuthProvider>
+                <ServerProvider>
+                  <AuthenticatedShell />
+                </ServerProvider>
+              </ControlAuthProvider>
+            </KeyboardProvider>
+          </GestureHandlerRootView>
+        </QueryClientProvider>
+      </ErrorBoundary>
+    </SafeAreaProvider>
   );
 }

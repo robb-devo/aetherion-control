@@ -55,7 +55,6 @@
     "zod-validation-error": "^3.4.0"
   },
   "dependencies": {
-    "@clerk/expo": "4.6.8",
     "expo-auth-session": "57.0.12",
     "expo-crypto": "57.0.3",
     "expo-secure-store": "57.0.4"

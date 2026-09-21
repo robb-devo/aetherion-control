@@ -88,9 +88,20 @@ async function parse<T>(response: Response): Promise<T> {
 
 async function getToken() {
   if (cachedToken && cachedToken.expiresAt > Date.now()) return cachedToken.value;
+
+  // Prefer a long-lived Crafty API key (Bearer JWT). Password login often breaks
+  // after the admin password is rotated away from default-creds.txt.
+  const apiToken = process.env.CRAFTY_API_TOKEN?.trim();
+  if (apiToken) {
+    cachedToken = { value: apiToken, expiresAt: Date.now() + 24 * 60 * 60 * 1000 };
+    return apiToken;
+  }
+
   const username = process.env.CRAFTY_USERNAME;
   const password = process.env.CRAFTY_PASSWORD;
-  if (!username || !password) throw new Error("Crafty credentials are not configured.");
+  if (!username || !password) {
+    throw new Error("Crafty credentials are not configured (set CRAFTY_API_TOKEN or username/password).");
+  }
 
   const response = await fetchCrafty("/api/v2/auth/login", {
     method: "POST",
@@ -110,7 +121,7 @@ export async function craftyRequest<T>(path: string, init: RequestInit = {}) {
   if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
 
   let response = await fetchCrafty(path, { ...init, headers });
-  if (response.status === 401 || response.status === 403) {
+  if ((response.status === 401 || response.status === 403) && !process.env.CRAFTY_API_TOKEN?.trim()) {
     cachedToken = null;
     const retryToken = await getToken();
     headers.set("authorization", `Bearer ${retryToken}`);

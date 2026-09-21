@@ -1,0 +1,17 @@
+[Unit]
+Description=Aetherion Control API
+After=network.target crafty.service
+Wants=crafty.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/aetherion-control/artifacts/api-server
+EnvironmentFile=/etc/aetherion-control.env
+ExecStart=/usr/bin/node --enable-source-maps /opt/aetherion-control/artifacts/api-server/dist/index.mjs
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
