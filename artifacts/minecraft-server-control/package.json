@@ -51,6 +51,7 @@
     "react-native-svg": "15.15.4",
     "react-native-web": "~0.21.0",
     "react-native-worklets": "0.10.1",
+    "semver": "^7.7.3",
     "whatwg-fetch": "^3.6.20"
   },
   "devDependencies": {

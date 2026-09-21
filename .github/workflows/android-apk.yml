@@ -112,15 +112,38 @@ jobs:
       - name: Install dependencies
         run: |
           set -euo pipefail
-          # Metro sets disableHierarchicalLookup, so it only searches the app and
-          # workspace node_modules. Hoist Expo/Metro so entry-classic.js can
-          # resolve @expo/metro-runtime. These settings do not change the lockfile.
-          touch .npmrc
-          grep -qxF 'shamefully-hoist=true' .npmrc || echo 'shamefully-hoist=true' >> .npmrc
-          grep -qxF 'public-hoist-pattern[]=*expo*' .npmrc || echo 'public-hoist-pattern[]=*expo*' >> .npmrc
-          grep -qxF 'public-hoist-pattern[]=*metro*' .npmrc || echo 'public-hoist-pattern[]=*metro*' >> .npmrc
-          grep -qxF 'public-hoist-pattern[]=*whatwg*' .npmrc || echo 'public-hoist-pattern[]=*whatwg*' >> .npmrc
-          pnpm install --frozen-lockfile
+          # Metro sets disableHierarchicalLookup, so nested .pnpm paths are invisible.
+          # Flatten node_modules for the release bundle. This file is CI-only;
+          # pnpm-workspace.yaml still carries the supply-chain age check.
+          printf '%s\n' \
+            'auto-install-peers=false' \
+            'strict-peer-dependencies=false' \
+            'node-linker=hoisted' \
+            'shamefully-hoist=true' \
+            > .npmrc
+          pnpm install --no-frozen-lockfile
+          # Direct deps of a workspace package can stay in that package's
+          # node_modules. Metro also searches the repo root.
+          link_root() {
+            local pkg="$1"
+            if [ -d "node_modules/${pkg}" ]; then
+              return 0
+            fi
+            local src="artifacts/minecraft-server-control/node_modules/${pkg}"
+            if [ ! -d "${src}" ]; then
+              echo "Missing ${pkg}"
+              exit 1
+            fi
+            mkdir -p "node_modules/$(dirname "${pkg}")"
+            ln -s "$(realpath --relative-to="node_modules/$(dirname "${pkg}")" "${src}")" "node_modules/${pkg}"
+          }
+          link_root @expo/metro-runtime
+          link_root semver
+          link_root whatwg-fetch
+          test -d node_modules/@expo/metro-runtime
+          test -d node_modules/semver
+          test -d node_modules/whatwg-fetch
+          test -e node_modules/semver/functions/satisfies.js
 
       # Workspace overrides drop every esbuild platform binary except the one
       # recorded in the lockfile. On ubuntu-latest that package is linux-x64.
@@ -133,10 +156,6 @@ jobs:
             exit 1
           fi
           echo "Found ${FOUND}"
-          if [ ! -e node_modules/@expo/metro-runtime ] && [ ! -e artifacts/minecraft-server-control/node_modules/@expo/metro-runtime ]; then
-            echo "Missing @expo/metro-runtime in node_modules. Metro cannot bundle expo-router/entry-classic.js."
-            exit 1
-          fi
 
       - name: Set up Java
         uses: actions/setup-java@v4
