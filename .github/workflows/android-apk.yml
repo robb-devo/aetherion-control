@@ -1,0 +1,303 @@
+# Build and publish the AETHERION Control sideload APK. No laptop.
+#
+# Robb, after this file is on the default branch (main) and on release/1.0.15:
+#   Actions → Android APK → Run workflow
+#   Branch: release/1.0.15   (main is still 1.0.3 — do not build that)
+#   Tag: v1.0.15             (prefilled; clear it to upload an artifact only)
+# That run writes AETHERION-Control-1.0.15.apk and attaches it to the GitHub
+# Release the control API serves from /api/app/latest.
+# Pushing a v* tag runs the same job. See docs/ANDROID_APK_RELEASE.md.
+#
+# assembleRelease keeps Expo's signingConfigs.debug. The prebuild debug.keystore
+# is the standard Android debug certificate
+# (SHA1 5E:8F:16:06:2E:A3:CD:2C:4A:0D:54:78:76:BA:A6:F3:8C:AB:F6:25), so a
+# sideload from 1.0.14 stays an update. Do not add a new release keystore.
+
+name: Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create or update (v1.0.15). Leave empty to upload the APK artifact only."
+        required: false
+        default: "v1.0.15"
+        type: string
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    name: Build and publish APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      # workflow_dispatch tag input. Tag pushes ignore this and use GITHUB_REF_NAME.
+      INPUT_TAG: ${{ inputs.tag }}
+      EXPO_NO_TELEMETRY: "1"
+      EXPO_NO_GIT_STATUS: "1"
+      EXPECTED_SHA1: "5E:8F:16:06:2E:A3:CD:2C:4A:0D:54:78:76:BA:A6:F3:8C:AB:F6:25"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # pnpm 9 rejects this lockfile (ERR_PNPM_LOCKFILE_CONFIG_MISMATCH): overrides
+      # live in pnpm-workspace.yaml, which pnpm 10 reads. 10.33.3 frozen-installs.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.3
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Read app version
+        id: meta
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./artifacts/minecraft-server-control/app.json').expo.version")
+          VERSION_CODE=$(node -p "require('./artifacts/minecraft-server-control/app.json').expo.android.versionCode")
+          PACKAGE=$(node -p "require('./artifacts/minecraft-server-control/app.json').expo.android.package")
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            RELEASE_TAG="${GITHUB_REF_NAME}"
+          else
+            RELEASE_TAG="${INPUT_TAG:-}"
+          fi
+          echo "RELEASE_TAG=${RELEASE_TAG}" >> "$GITHUB_ENV"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "version_code=${VERSION_CODE}" >> "$GITHUB_OUTPUT"
+          echo "package=${PACKAGE}" >> "$GITHUB_OUTPUT"
+          echo "apk=AETHERION-Control-${VERSION}.apk" >> "$GITHUB_OUTPUT"
+          if [ -n "${RELEASE_TAG}" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Building ${PACKAGE} ${VERSION} (versionCode ${VERSION_CODE}) from ${GITHUB_REF}"
+          if [ "${PACKAGE}" != "com.aetherion.control" ]; then
+            echo "Unexpected Android package: ${PACKAGE}"
+            exit 1
+          fi
+          if [ -n "${RELEASE_TAG:-}" ]; then
+            case "${RELEASE_TAG}" in
+              v*) ;;
+              *)
+                echo "Tag must look like v1.0.15 (got '${RELEASE_TAG}')."
+                exit 1
+                ;;
+            esac
+            TAG_VERSION="${RELEASE_TAG#v}"
+            if [ "${TAG_VERSION}" != "${VERSION}" ]; then
+              echo "Refusing to publish ${RELEASE_TAG}: app.json version is ${VERSION}."
+              echo "Select branch release/${TAG_VERSION} in Run workflow. main is an older app."
+              exit 1
+            fi
+            echo "Will publish GitHub Release ${RELEASE_TAG}"
+          else
+            echo "No tag; uploading the workflow artifact only."
+          fi
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Workspace overrides drop every esbuild platform binary except the one
+      # recorded in the lockfile. On ubuntu-latest that package is linux-x64.
+      - name: Check Linux esbuild
+        run: |
+          set -euo pipefail
+          FOUND=$(find node_modules -path '*@esbuild/linux-x64/package.json' -print -quit)
+          if [ -z "${FOUND}" ]; then
+            echo "Missing @esbuild/linux-x64. pnpm-workspace.yaml overrides the other esbuild platforms; Ubuntu CI needs the linux-x64 optional dependency from the lockfile."
+            exit 1
+          fi
+          echo "Found ${FOUND}"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      # Versions match the Expo SDK 57 / React Native 0.86 catalog
+      # (compileSdk 36, build-tools 36.0.0, NDK 27.1.12297006).
+      - name: Install Android SDK packages
+        run: |
+          set -euo pipefail
+          sdkmanager --install \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;27.1.12297006" \
+            "cmake;3.22.1"
+
+      - name: Prebuild Android
+        working-directory: artifacts/minecraft-server-control
+        run: pnpm exec expo prebuild --platform android --no-install
+
+      - name: Write local.properties
+        working-directory: artifacts/minecraft-server-control
+        run: |
+          set -euo pipefail
+          if [ -z "${ANDROID_HOME:-}" ]; then
+            echo "ANDROID_HOME is not set"
+            exit 1
+          fi
+          printf 'sdk.dir=%s\n' "${ANDROID_HOME}" > android/local.properties
+          echo "sdk.dir=${ANDROID_HOME}"
+
+      - name: Phone ABIs and Gradle memory
+        working-directory: artifacts/minecraft-server-control
+        run: |
+          set -euo pipefail
+          sed -i 's/^reactNativeArchitectures=.*/reactNativeArchitectures=armeabi-v7a,arm64-v8a/' android/gradle.properties
+          sed -i 's/^org.gradle.jvmargs=.*/org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8/' android/gradle.properties
+          grep -q '^reactNativeArchitectures=armeabi-v7a,arm64-v8a$' android/gradle.properties
+          grep -q '^org.gradle.jvmargs=-Xmx4g' android/gradle.properties
+
+      - name: Require the standard debug keystore
+        working-directory: artifacts/minecraft-server-control
+        run: |
+          set -euo pipefail
+          KEYSTORE="android/app/debug.keystore"
+          test -f "${KEYSTORE}"
+          FINGERPRINT=$(keytool -list -v -keystore "${KEYSTORE}" -storepass android -alias androiddebugkey | sed -n 's/^[[:space:]]*SHA1: //p')
+          echo "debug.keystore SHA1=${FINGERPRINT}"
+          if [ "${FINGERPRINT}" != "${EXPECTED_SHA1}" ]; then
+            echo "Refusing to build. Expected the standard Android debug certificate ${EXPECTED_SHA1}."
+            exit 1
+          fi
+          # Expo's release buildType already points at signingConfigs.debug.
+          # Fail if a future prebuild stops doing that, instead of inventing a keystore.
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          text = Path("android/app/build.gradle").read_text()
+          types = re.search(r"buildTypes\s*\{", text)
+          if not types:
+              sys.exit("android/app/build.gradle has no buildTypes block")
+          rel = re.search(r"release\s*\{", text[types.end():])
+          if not rel:
+              sys.exit("android/app/build.gradle has no release buildType")
+          start = types.end() + rel.end() - 1
+          depth = 0
+          end = None
+          for index in range(start, len(text)):
+              if text[index] == "{":
+                  depth += 1
+              elif text[index] == "}":
+                  depth -= 1
+                  if depth == 0:
+                      end = index
+                      break
+          if end is None:
+              sys.exit("release buildType block is not closed")
+          block = text[start + 1:end]
+          print("release buildType:")
+          print(block)
+          if not re.search(r"signingConfig\s+signingConfigs\.debug", block):
+              sys.exit("release buildType is not signed with signingConfigs.debug")
+          if re.search(r"signingConfig\s+signingConfigs\.release", block):
+              sys.exit("release buildType uses a release keystore. Sideload updates from 1.0.14 would fail.")
+          PY
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Assemble release APK
+        working-directory: artifacts/minecraft-server-control/android
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: ./gradlew assembleRelease --stacktrace
+
+      - name: Verify APK signature and identity
+        id: apk
+        run: |
+          set -euo pipefail
+          SRC="artifacts/minecraft-server-control/android/app/build/outputs/apk/release/app-release.apk"
+          APK="${{ steps.meta.outputs.apk }}"
+          if [ ! -f "${SRC}" ]; then
+            echo "Release APK not found at ${SRC}"
+            find artifacts/minecraft-server-control/android/app/build/outputs -name '*.apk' -print || true
+            exit 1
+          fi
+          cp "${SRC}" "${APK}"
+          APKSIGNER=$(find "${ANDROID_HOME}/build-tools" -name apksigner | sort | tail -1)
+          AAPT=$(find "${ANDROID_HOME}/build-tools" -name aapt | sort | tail -1)
+          test -x "${APKSIGNER}"
+          test -x "${AAPT}"
+          CERTS=$("${APKSIGNER}" verify --print-certs "${APK}")
+          printf '%s\n' "${CERTS}"
+          EXPECTED_HEX=$(printf '%s' "${EXPECTED_SHA1}" | tr -d ':' | tr '[:lower:]' '[:upper:]')
+          NORMALIZED=$(printf '%s' "${CERTS}" | tr -d ': \n' | tr '[:lower:]' '[:upper:]')
+          case "${NORMALIZED}" in
+            *"${EXPECTED_HEX}"*) ;;
+            *)
+              echo "APK certificate is not the standard debug keystore."
+              exit 1
+              ;;
+          esac
+          BADGING=$("${AAPT}" dump badging "${APK}")
+          printf '%s\n' "${BADGING}" | sed -n '1,5p'
+          case "${BADGING}" in
+            *"name='com.aetherion.control'"*) ;;
+            *) echo "APK package is not com.aetherion.control"; exit 1 ;;
+          esac
+          case "${BADGING}" in
+            *"versionCode='${{ steps.meta.outputs.version_code }}'"*) ;;
+            *) echo "APK versionCode does not match app.json"; exit 1 ;;
+          esac
+          case "${BADGING}" in
+            *"versionName='${{ steps.meta.outputs.version }}'"*) ;;
+            *) echo "APK versionName does not match app.json"; exit 1 ;;
+          esac
+          echo "path=${APK}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.apk }}
+          path: ${{ steps.meta.outputs.apk }}
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Publish GitHub Release
+        if: steps.meta.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APK_NAME: ${{ steps.meta.outputs.apk }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          VERSION_CODE: ${{ steps.meta.outputs.version_code }}
+        run: |
+          set -euo pipefail
+          NOTES="${VERSION} sideload APK (versionCode ${VERSION_CODE}). Debug-signed (SHA1 ${EXPECTED_SHA1}) so it updates 1.0.14 in place."
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" "${APK_NAME}" --clobber
+            gh release edit "${RELEASE_TAG}" --notes "${NOTES}" --latest --title "AETHERION Control ${VERSION}"
+          elif ! gh release create "${RELEASE_TAG}" "${APK_NAME}" \
+              --title "AETHERION Control ${VERSION}" \
+              --notes "${NOTES}" \
+              --target "${GITHUB_SHA}" \
+              --latest; then
+            # The tag already exists and has no release object yet.
+            gh release create "${RELEASE_TAG}" "${APK_NAME}" \
+              --title "AETHERION Control ${VERSION}" \
+              --notes "${NOTES}" \
+              --latest
+          fi
+          gh release view "${RELEASE_TAG}" --json url,tagName,assets --jq '{url,tagName,assets:[.assets[].name]}'
