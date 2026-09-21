@@ -112,38 +112,20 @@ jobs:
       - name: Install dependencies
         run: |
           set -euo pipefail
-          # Metro sets disableHierarchicalLookup, so nested .pnpm paths are invisible.
-          # Flatten node_modules for the release bundle. This file is CI-only;
-          # pnpm-workspace.yaml still carries the supply-chain age check.
+          # Do not set node-linker=hoisted. That layout made Gradle unable to
+          # require('expo/package.json'). Keep pnpm's store and hoist every
+          # package to the repo-root node_modules.
           printf '%s\n' \
             'auto-install-peers=false' \
             'strict-peer-dependencies=false' \
-            'node-linker=hoisted' \
             'shamefully-hoist=true' \
-            > .npmrc
-          pnpm install --no-frozen-lockfile
-          # Direct deps of a workspace package can stay in that package's
-          # node_modules. Metro also searches the repo root.
-          link_root() {
-            local pkg="$1"
-            if [ -d "node_modules/${pkg}" ]; then
-              return 0
-            fi
-            local src="artifacts/minecraft-server-control/node_modules/${pkg}"
-            if [ ! -d "${src}" ]; then
-              echo "Missing ${pkg}"
-              exit 1
-            fi
-            mkdir -p "node_modules/$(dirname "${pkg}")"
-            ln -s "$(realpath --relative-to="node_modules/$(dirname "${pkg}")" "${src}")" "node_modules/${pkg}"
-          }
-          link_root @expo/metro-runtime
-          link_root semver
-          link_root whatwg-fetch
+            'public-hoist-pattern[]=*' \
+            >> .npmrc
+          pnpm install --frozen-lockfile
+          test -f node_modules/expo/package.json
           test -d node_modules/@expo/metro-runtime
           test -d node_modules/semver
-          test -d node_modules/whatwg-fetch
-          test -e node_modules/semver/functions/satisfies.js
+          test -f node_modules/react-native/package.json
 
       # Workspace overrides drop every esbuild platform binary except the one
       # recorded in the lockfile. On ubuntu-latest that package is linux-x64.
@@ -263,7 +245,10 @@ jobs:
         working-directory: artifacts/minecraft-server-control/android
         env:
           NODE_OPTIONS: --max-old-space-size=4096
-        run: ./gradlew assembleRelease --stacktrace
+          NODE_PATH: ${{ github.workspace }}/node_modules
+        run: |
+          export NODE_PATH="${GITHUB_WORKSPACE}/node_modules"
+          ./gradlew assembleRelease --stacktrace
 
       - name: Verify APK signature and identity
         id: apk
