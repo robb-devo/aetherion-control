@@ -304,10 +304,30 @@ export async function runCraftyAction(id: string, action: string) {
 }
 
 export async function sendCraftyCommand(id: string, command: string) {
-  return craftyRequest(`/api/v2/servers/${encodeURIComponent(id)}/stdin`, {
-    method: "POST",
-    body: JSON.stringify({ command }),
+  // Crafty /stdin expects the raw console command as text/plain — NOT JSON.
+  // Sending {"command":"..."} makes Minecraft try to execute the JSON literal.
+  const token = await getToken();
+  const headers = new Headers({
+    accept: "application/json",
+    authorization: `Bearer ${token}`,
+    "content-type": "text/plain; charset=utf-8",
   });
+  let response = await fetchCrafty(`/api/v2/servers/${encodeURIComponent(id)}/stdin`, {
+    method: "POST",
+    headers,
+    body: command,
+  });
+  if ((response.status === 401 || response.status === 403) && !process.env.CRAFTY_API_TOKEN?.trim()) {
+    cachedToken = null;
+    const retryToken = await getToken();
+    headers.set("authorization", `Bearer ${retryToken}`);
+    response = await fetchCrafty(`/api/v2/servers/${encodeURIComponent(id)}/stdin`, {
+      method: "POST",
+      headers,
+      body: command,
+    });
+  }
+  return parse(response);
 }
 
 export async function getCraftyFiles(id: string, requestedPath: string) {

@@ -2,7 +2,7 @@
   "expo": {
     "name": "AETHERION",
     "slug": "minecraft-server-control",
-    "version": "1.0.3",
+    "version": "1.0.15",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "minecraft-server-control",
@@ -10,7 +10,7 @@
     "ios": { "supportsTablet": false },
     "android": {
       "package": "com.aetherion.control",
-      "versionCode": 5,
+      "versionCode": 17,
       "supportsTablet": false,
       "usesCleartextTraffic": true,
       "adaptiveIcon": {

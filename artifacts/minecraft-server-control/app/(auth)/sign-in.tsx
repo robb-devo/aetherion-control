@@ -6,26 +6,39 @@ import { useColors } from '@/hooks/useColors';
 import { uiStyles } from '@/components/ControlUI';
 import { useControlAuth } from '@/context/ControlAuth';
 
-const DEFAULT_API = 'http://135.181.18.162:5055';
-
 export default function SignInScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { unlock, apiBase } = useControlAuth();
-  const [base, setBase] = useState(apiBase || DEFAULT_API);
+  const { unlockWithCode, unlockWithApiKey } = useControlAuth();
+  const [code, setCode] = useState('');
+  const [advanced, setAdvanced] = useState(false);
+  const [base, setBase] = useState('http://135.181.18.162:5055');
   const [key, setKey] = useState('');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
-  const submit = async () => {
+  const submitCode = async () => {
     setNotice(null);
     setBusy(true);
     try {
-      await unlock(base, key);
+      await unlockWithCode(code);
       router.replace('/(tabs)' as never);
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : 'Unlock fehlgeschlagen.');
+      setNotice(error instanceof Error ? error.message : 'Unlock failed.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitAdvanced = async () => {
+    setNotice(null);
+    setBusy(true);
+    try {
+      await unlockWithApiKey(base, key);
+      router.replace('/(tabs)' as never);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Unlock failed.');
     } finally {
       setBusy(false);
     }
@@ -37,43 +50,38 @@ export default function SignInScreen() {
         contentContainerStyle={[styles.content, { paddingTop: insets.top + 42, paddingBottom: insets.bottom + 28 }]}
         keyboardShouldPersistTaps="handled"
       >
-        <View style={styles.brand}>
+        <Pressable
+          style={styles.brand}
+          onLongPress={() => setAdvanced((value) => !value)}
+          delayLongPress={700}
+        >
           <View style={[styles.brandMark, { backgroundColor: colors.primary }]}>
             <Text style={[styles.brandMarkText, { color: colors.primaryForeground }]}>A</Text>
           </View>
           <Text style={[styles.brandName, { color: colors.foreground }]}>AETHERION</Text>
-        </View>
+        </Pressable>
         <Text style={[styles.kicker, { color: colors.primary }]}>CONTROL ACCESS</Text>
-        <Text style={[styles.title, { color: colors.foreground }]}>Dein Panel.</Text>
+        <Text style={[styles.title, { color: colors.foreground }]}>Enter your code.</Text>
         <Text style={[styles.subtitle, { color: colors.mutedForeground }]}>
-          Ein API-Schlüssel. Direkte Steuerung von Crafty auf dem Hetzner — ohne Google, ohne Clerk, ohne Replit.
+          Type the access code you were given, then unlock.
         </Text>
         <View style={styles.form}>
-          <Text style={[styles.label, { color: colors.mutedForeground }]}>API Base URL</Text>
+          <Text style={[styles.label, { color: colors.mutedForeground }]}>Access code</Text>
           <TextInput
-            value={base}
-            onChangeText={setBase}
-            autoCapitalize="none"
+            value={code}
+            onChangeText={setCode}
+            autoCapitalize="characters"
             autoCorrect={false}
-            placeholder={DEFAULT_API}
+            autoComplete="off"
+            placeholder="YOUR-CODE"
             placeholderTextColor={colors.mutedForeground}
-            style={[styles.input, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.card }]}
-          />
-          <Text style={[styles.label, { color: colors.mutedForeground }]}>Control API Key</Text>
-          <TextInput
-            value={key}
-            onChangeText={setKey}
-            autoCapitalize="none"
-            autoCorrect={false}
-            secureTextEntry
-            placeholder="dein Schlüssel"
-            placeholderTextColor={colors.mutedForeground}
-            style={[styles.input, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.card }]}
+            style={[styles.input, styles.codeInput, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.card }]}
+            onSubmitEditing={() => void submitCode()}
           />
           {notice ? <Text style={[styles.notice, { color: colors.destructive }]}>{notice}</Text> : null}
           <Pressable
             disabled={busy}
-            onPress={() => void submit()}
+            onPress={() => void submitCode()}
             style={({ pressed }) => [
               styles.button,
               { backgroundColor: colors.primary, opacity: busy ? 0.45 : 1 },
@@ -81,9 +89,42 @@ export default function SignInScreen() {
             ]}
           >
             <Text style={[styles.buttonText, { color: colors.primaryForeground }]}>
-              {busy ? 'Verbinde…' : 'Entsperren'}
+              {busy ? 'Connecting…' : 'Unlock'}
             </Text>
           </Pressable>
+
+          {advanced ? (
+            <View style={{ gap: 10, marginTop: 18 }}>
+              <Text style={[styles.label, { color: colors.mutedForeground }]}>API Base URL</Text>
+              <TextInput
+                value={base}
+                onChangeText={setBase}
+                autoCapitalize="none"
+                autoCorrect={false}
+                style={[styles.input, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.card }]}
+              />
+              <Text style={[styles.label, { color: colors.mutedForeground }]}>Control API Key</Text>
+              <TextInput
+                value={key}
+                onChangeText={setKey}
+                autoCapitalize="none"
+                autoCorrect={false}
+                secureTextEntry
+                style={[styles.input, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.card }]}
+              />
+              <Pressable
+                disabled={busy}
+                onPress={() => void submitAdvanced()}
+                style={({ pressed }) => [
+                  styles.button,
+                  { backgroundColor: colors.secondary, opacity: busy ? 0.45 : 1 },
+                  pressed && { opacity: 0.75 },
+                ]}
+              >
+                <Text style={[styles.buttonText, { color: colors.foreground }]}>Unlock with API key</Text>
+              </Pressable>
+            </View>
+          ) : null}
         </View>
       </ScrollView>
     </View>
@@ -108,6 +149,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     fontFamily: 'Inter_400Regular',
     fontSize: 13,
+  },
+  codeInput: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 18,
+    letterSpacing: 1.4,
+    textAlign: 'center',
   },
   notice: { fontFamily: 'Inter_500Medium', fontSize: 12, lineHeight: 17, marginTop: 4 },
   button: {
