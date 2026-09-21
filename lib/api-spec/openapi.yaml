@@ -1,0 +1,661 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: API specification
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: crafty
+    description: Secure Crafty Controller operations
+  - name: provisioning
+    description: Dedicated Minecraft host provisioning
+  - name: infrastructure
+    description: Existing Hetzner dedicated infrastructure
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /crafty/health:
+    get:
+      operationId: craftyHealth
+      tags: [crafty]
+      summary: Check the configured Crafty Controller
+      responses:
+        "200":
+          description: Crafty is reachable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CraftyHealth"
+        "401":
+          description: Authentication required
+        "502":
+          description: Crafty is unavailable
+  /crafty/servers:
+    get:
+      operationId: listCraftyServers
+      tags: [crafty]
+      summary: List Crafty-managed servers
+      responses:
+        "200":
+          description: Server list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CraftyServersResponse"
+        "401":
+          description: Authentication required
+  /crafty/servers/{id}/stats:
+    get:
+      operationId: getCraftyServerStats
+      tags: [crafty]
+      summary: Get live stats for a Crafty server
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Live server stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CraftyStats"
+        "401":
+          description: Authentication required
+  /crafty/servers/{id}/logs:
+    get:
+      operationId: getCraftyServerLogs
+      tags: [crafty]
+      summary: Get recent logs for a Crafty server
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Recent server log lines
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CraftyLogsResponse"
+        "401":
+          description: Authentication required
+  /crafty/servers/{id}/files/query:
+    post:
+      operationId: listCraftyServerFiles
+      tags: [crafty]
+      summary: List a path inside a Crafty server root
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CraftyPathInput"
+      responses:
+        "200":
+          description: Directory contents or file contents
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CraftyFileResponse"
+        "400": { description: Invalid path }
+        "401": { description: Authentication required }
+  /crafty/servers/{id}/files:
+    put:
+      operationId: saveCraftyServerFile
+      tags: [crafty]
+      summary: Save a text file inside a Crafty server root
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CraftyFileInput"
+      responses:
+        "200":
+          description: File saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CraftyMutationResponse"
+        "400": { description: Invalid path or content }
+        "401": { description: Authentication required }
+    delete:
+      operationId: deleteCraftyServerFile
+      tags: [crafty]
+      summary: Delete a path inside a Crafty server root
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CraftyPathInput"
+      responses:
+        "200":
+          description: Path deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CraftyMutationResponse"
+        "400": { description: Invalid path }
+        "401": { description: Authentication required }
+  /crafty/servers/{id}/plugins:
+    get:
+      operationId: listCraftyServerPlugins
+      tags: [crafty]
+      summary: List installed plugins or mods
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Installed plugin and mod files
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CraftyPluginsResponse"
+        "401": { description: Authentication required }
+  /crafty/servers/{id}/backups:
+    get:
+      operationId: listCraftyServerBackups
+      tags: [crafty]
+      summary: List server backups
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Server backups
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CraftyBackupsResponse"
+        "401": { description: Authentication required }
+  /crafty/servers/{id}/action:
+    post:
+      operationId: runCraftyServerAction
+      tags: [crafty]
+      summary: Run a safe Crafty server action
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CraftyActionRequest"
+      responses:
+        "200":
+          description: Action accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CraftyActionResponse"
+        "400":
+          description: Unsupported action
+        "401":
+          description: Authentication required
+  /crafty/servers/{id}/command:
+    post:
+      operationId: sendCraftyServerCommand
+      tags: [crafty]
+      summary: Send a command to a Crafty server console
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CraftyCommandRequest"
+      responses:
+        "200":
+          description: Command accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CraftyCommandResponse"
+        "400":
+          description: Invalid command
+        "401":
+          description: Authentication required
+  /provisioning/options:
+    get:
+      operationId: getProvisioningOptions
+      tags: [provisioning]
+      summary: Get available Minecraft host options and backend readiness
+      responses:
+        "200":
+          description: Provisioning options
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProvisioningOptions"
+        "401":
+          description: Authentication required
+  /provisioning/jobs:
+    post:
+      operationId: createProvisioningJob
+      tags: [provisioning]
+      summary: Provision a dedicated Minecraft host
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProvisioningInput"
+      responses:
+        "202":
+          description: Provisioning started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProvisioningJob"
+        "400":
+          description: Invalid configuration
+        "401":
+          description: Authentication required
+        "503":
+          description: Hetzner is not configured
+  /provisioning/jobs/{id}:
+    get:
+      operationId: getProvisioningJob
+      tags: [provisioning]
+      summary: Get provisioning progress
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Current provisioning state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProvisioningJob"
+        "401":
+          description: Authentication required
+        "404":
+          description: Provisioning job not found
+  /infrastructure/hosts:
+    get:
+      operationId: listHetznerDedicatedServers
+      tags: [infrastructure]
+      summary: List live Hetzner Robot dedicated servers
+      responses:
+        "200":
+          description: Dedicated host inventory
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HetznerHostsResponse"
+        "401":
+          description: Authentication required
+        "502":
+          description: Hetzner Robot is unavailable
+components:
+  schemas:
+    HetznerHost:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        serverIp: { type: string }
+        ipv6Network: { type: string }
+        product: { type: string }
+        datacenter: { type: string }
+        traffic: { type: string }
+        status: { type: string }
+        cancelled: { type: boolean }
+        paidUntil: { type: string }
+        additionalIps:
+          type: array
+          items: { type: string }
+      required: [id, name, serverIp, ipv6Network, product, datacenter, traffic, status, cancelled, paidUntil, additionalIps]
+    HetznerHostsResponse:
+      type: object
+      properties:
+        hosts:
+          type: array
+          items:
+            $ref: "#/components/schemas/HetznerHost"
+      required: [hosts]
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+    CraftyHealth:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+    CraftyServer:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        ip:
+          type: string
+        port:
+          type: integer
+        type:
+          type: string
+        executable:
+          type: string
+        command:
+          type: string
+        createdAt:
+          type: [string, "null"]
+        path:
+          type: string
+        autoStart:
+          type: boolean
+      required:
+        - id
+        - name
+        - ip
+        - port
+        - type
+        - executable
+        - command
+        - createdAt
+        - path
+        - autoStart
+    CraftyServersResponse:
+      type: object
+      properties:
+        servers:
+          type: array
+          items:
+            $ref: "#/components/schemas/CraftyServer"
+      required:
+        - servers
+    CraftyStats:
+      type: object
+      properties:
+        running:
+          type: boolean
+        cpu:
+          type: number
+        memory:
+          type: string
+        memoryPercent:
+          type: number
+        online:
+          type: integer
+        maxPlayers:
+          type: integer
+        players:
+          type: array
+          items:
+            type: string
+        version:
+          type: string
+        port:
+          type: integer
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - running
+        - cpu
+        - memory
+        - memoryPercent
+        - online
+        - maxPlayers
+        - players
+        - version
+        - port
+        - updatedAt
+    CraftyLogsResponse:
+      type: object
+      properties:
+        lines:
+          type: array
+          items:
+            type: string
+      required:
+        - lines
+    CraftyFileEntry:
+      type: object
+      properties:
+        name: { type: string }
+        path: { type: string }
+        directory: { type: boolean }
+        size: { type: integer }
+        modifiedAt: { type: [string, "null"] }
+      required: [name, path, directory, size, modifiedAt]
+    CraftyFileResponse:
+      type: object
+      properties:
+        path: { type: string }
+        directory: { type: boolean }
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/CraftyFileEntry"
+        content: { type: [string, "null"] }
+      required: [path, directory, entries, content]
+    CraftyFileInput:
+      type: object
+      properties:
+        path: { type: string, minLength: 1, maxLength: 500 }
+        content: { type: string, maxLength: 1048576 }
+      required: [path, content]
+    CraftyPathInput:
+      type: object
+      properties:
+        path: { type: string, maxLength: 500 }
+      required: [path]
+    CraftyMutationResponse:
+      type: object
+      properties:
+        ok: { type: boolean }
+      required: [ok]
+    CraftyPlugin:
+      type: object
+      properties:
+        name: { type: string }
+        path: { type: string }
+        kind: { type: string, enum: [plugin, mod] }
+        size: { type: integer }
+      required: [name, path, kind, size]
+    CraftyPluginsResponse:
+      type: object
+      properties:
+        plugins:
+          type: array
+          items:
+            $ref: "#/components/schemas/CraftyPlugin"
+      required: [plugins]
+    CraftyBackup:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        size: { type: integer }
+        createdAt: { type: [string, "null"] }
+      required: [id, name, size, createdAt]
+    CraftyBackupsResponse:
+      type: object
+      properties:
+        backups:
+          type: array
+          items:
+            $ref: "#/components/schemas/CraftyBackup"
+      required: [backups]
+    CraftyActionRequest:
+      type: object
+      properties:
+        action:
+          type: string
+          enum: [start_server, stop_server, restart_server, kill_server, backup_server]
+      required:
+        - action
+    CraftyActionResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        action:
+          type: string
+      required:
+        - ok
+        - action
+    CraftyCommandRequest:
+      type: object
+      properties:
+        command:
+          type: string
+          minLength: 1
+          maxLength: 240
+      required:
+        - command
+    CraftyCommandResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+      required:
+        - ok
+    ProvisioningChoice:
+      type: object
+      properties:
+        value:
+          type: string
+        label:
+          type: string
+      required: [value, label]
+    ProvisioningSize:
+      type: object
+      properties:
+        value:
+          type: string
+        label:
+          type: string
+        ramGb:
+          type: integer
+        cpu:
+          type: integer
+      required: [value, label, ramGb, cpu]
+    ProvisioningOptions:
+      type: object
+      properties:
+        configured:
+          type: boolean
+        versions:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProvisioningChoice"
+        serverTypes:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProvisioningChoice"
+        regions:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProvisioningChoice"
+        sizes:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProvisioningSize"
+      required: [configured, versions, serverTypes, regions, sizes]
+    ProvisioningInput:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 3
+          maxLength: 32
+          pattern: "^[a-zA-Z0-9-]+$"
+        version:
+          type: string
+        serverType:
+          type: string
+          enum: [vanilla, paper, purpur]
+        region:
+          type: string
+          enum: [nbg1, fsn1, hel1]
+        size:
+          type: string
+          enum: [cpx22, cpx32, cpx42]
+      required: [name, version, serverType, region, size]
+    ProvisioningStep:
+      type: object
+      properties:
+        key:
+          type: string
+        label:
+          type: string
+        state:
+          type: string
+          enum: [pending, active, complete, failed]
+      required: [key, label, state]
+    ProvisioningJob:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum: [queued, provisioning, installing, ready, failed]
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+        message:
+          type: string
+        publicIp:
+          type: [string, "null"]
+        createdAt:
+          type: string
+          format: date-time
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProvisioningStep"
+      required: [id, name, status, progress, message, publicIp, createdAt, steps]
+
