@@ -1,9 +1,10 @@
 import { Router, type IRouter } from "express";
-import { requireAuth } from "../middlewares/requireAuth";
+import { requireAuth, requirePermission } from "../middlewares/requireAuth";
 import { listHetznerDedicatedServers } from "../lib/hetznerRobot";
 
 const router: IRouter = Router();
 router.use("/infrastructure", requireAuth);
+router.use("/infrastructure", requirePermission("infrastructure.read"));
 
 router.get("/infrastructure/hosts", async (_req, res): Promise<void> => {
   try {

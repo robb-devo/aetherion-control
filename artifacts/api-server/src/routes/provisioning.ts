@@ -8,10 +8,11 @@ import {
   provisioningOptions,
   type ProvisioningInput,
 } from "../lib/hetznerProvisioning";
-import { requireAuth } from "../middlewares/requireAuth";
+import { requireAuth, requirePermission } from "../middlewares/requireAuth";
 
 const router: IRouter = Router();
 router.use("/provisioning", requireAuth);
+router.use("/provisioning", requirePermission("provisioning"));
 
 router.get("/provisioning/options", (_req, res): void => {
   res.json(GetProvisioningOptionsResponse.parse(provisioningOptions));
