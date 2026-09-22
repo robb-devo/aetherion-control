@@ -1,10 +1,17 @@
 const path = require("node:path");
 const { app, BrowserWindow, ipcMain, shell } = require("electron");
+
+if (process.platform === "win32") {
+  app.setAppUserModelId("de.aetherion.launcher");
+}
 const { getSettings, saveSettings, loadManifest, paths } = require("./lib/paths.cjs");
 const { packStatus, syncMods, ensureFabricProfile, loadManifest: loadPack } = require("./lib/pack.cjs");
 const { loginMicrosoft, restoreSession, logout, peekAccount } = require("./lib/auth.cjs");
 const { prepareAndLaunch } = require("./lib/launch.cjs");
 const { ensureJava } = require("./lib/java.cjs");
+const { presentSettings, syncInstanceServers, parseSandboxTarget } = require("./lib/serverlist.cjs");
+const control = require("./lib/control.cjs");
+const updates = require("./lib/updates.cjs");
 
 /** @type {BrowserWindow | null} */
 let mainWindow = null;
@@ -18,11 +25,11 @@ function send(channel, payload) {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1080,
-    height: 680,
-    minWidth: 920,
-    minHeight: 600,
-    backgroundColor: "#121018",
+    width: 1120,
+    height: 740,
+    minWidth: 960,
+    minHeight: 640,
+    backgroundColor: "#100e16",
     title: "AETHERION",
     show: false,
     autoHideMenuBar: true,
@@ -36,6 +43,7 @@ function createWindow() {
     icon: path.join(__dirname, "..", "assets", "icon.png"),
   });
 
+  updates.rememberMainWindow(mainWindow);
   mainWindow.once("ready-to-show", () => mainWindow?.show());
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -50,10 +58,23 @@ function createWindow() {
   }
 }
 
+function statePayload(update) {
+  const manifest = loadManifest();
+  const settings = getSettings();
+  return {
+    account: cachedAuth?.account || peekAccount(),
+    settings: presentSettings(settings, manifest),
+    pack: packStatus(),
+    appVersion: app.getVersion(),
+    control: control.currentPublic(),
+    update: update || updates.snapshot(),
+  };
+}
+
 app.whenReady().then(async () => {
-  // Ensure data dirs exist early
   paths();
   createWindow();
+  updates.attachUpdater({ getMainWindow: () => mainWindow });
 
   try {
     const session = await restoreSession();
@@ -61,37 +82,47 @@ app.whenReady().then(async () => {
   } catch (err) {
     console.warn(err);
   }
+
+  try {
+    const update = await updates.checkForUpdate();
+    send("update:status", update);
+  } catch (err) {
+    console.warn(err);
+  }
 });
 
 app.on("window-all-closed", () => {
+  if (updates.isUpdating()) return;
   if (process.platform !== "darwin") app.quit();
 });
 
-ipcMain.handle("app:getState", async () => {
-  const manifest = loadManifest();
-  const settings = getSettings();
-  const status = packStatus();
-  const account = cachedAuth?.account || peekAccount();
-  return {
-    account,
-    settings: {
-      ramGb: settings.ramGb,
-      autoJoin: settings.autoJoin !== false,
-      serverAddress: settings.serverAddress || manifest.server.address,
-    },
-    pack: status,
-    appVersion: app.getVersion(),
-  };
-});
+ipcMain.handle("app:getState", async () => statePayload());
 
 ipcMain.handle("settings:update", async (_e, patch) => {
-  const next = saveSettings(patch || {});
-  const manifest = loadManifest();
-  return {
-    ramGb: next.ramGb,
-    autoJoin: next.autoJoin !== false,
-    serverAddress: next.serverAddress || manifest.server.address,
-  };
+  const nextPatch = {};
+  if (patch && Object.prototype.hasOwnProperty.call(patch, "ramGb")) {
+    const ram = Number(patch.ramGb);
+    if (Number.isInteger(ram)) nextPatch.ramGb = Math.max(2, Math.min(16, ram));
+  }
+  if (patch && Object.prototype.hasOwnProperty.call(patch, "autoJoin")) {
+    nextPatch.autoJoin = Boolean(patch.autoJoin);
+  }
+  if (patch && Object.prototype.hasOwnProperty.call(patch, "controlApiBase")) {
+    const raw = String(patch.controlApiBase || "").trim();
+    nextPatch.controlApiBase = raw ? control.normalizeBase(raw) : null;
+  }
+  if (patch && Object.prototype.hasOwnProperty.call(patch, "controlKey")) {
+    const raw = String(patch.controlKey || "").trim();
+    nextPatch.controlKey = raw || null;
+  }
+  const next = saveSettings(nextPatch);
+  return presentSettings(next, loadManifest());
+});
+
+ipcMain.handle("play:setTarget", async (_e, target) => {
+  const playTarget = parseSandboxTarget(target);
+  const next = saveSettings({ playTarget });
+  return presentSettings(next, loadManifest());
 });
 
 ipcMain.handle("auth:login", async () => {
@@ -112,14 +143,7 @@ ipcMain.handle("pack:install", async () => {
   await ensureJava(manifest.java?.major || 21, sendProgress);
   await ensureFabricProfile(manifest, sendProgress);
   await syncMods(manifest, sendProgress);
-  const { ensureServerEntry } = require("./lib/servers.cjs");
-  const { getSettings, paths: getPaths } = require("./lib/paths.cjs");
-  const settings = getSettings();
-  await ensureServerEntry(getPaths().instance, {
-    name: manifest.server.name,
-    address: settings.serverAddress || manifest.server.address,
-    port: manifest.server.port,
-  });
+  await syncInstanceServers(paths().instance, manifest, getSettings());
   return packStatus();
 });
 
@@ -136,6 +160,19 @@ ipcMain.handle("game:play", async () => {
   });
   return { ok: true };
 });
+
+function requirePlayer() {
+  const account = cachedAuth?.account || peekAccount();
+  if (!account?.id) throw new Error("Sign in with Microsoft before using sandboxes.");
+  return account.id;
+}
+
+ipcMain.handle("sandbox:options", async () => control.sandboxOptions(requirePlayer()));
+ipcMain.handle("sandbox:list", async () => control.sandboxList(requirePlayer()));
+ipcMain.handle("sandbox:create", async (_e, input) => control.sandboxCreate(requirePlayer(), input));
+ipcMain.handle("sandbox:start", async (_e, id) => control.sandboxStart(requirePlayer(), id));
+ipcMain.handle("sandbox:delete", async (_e, id) => control.sandboxDelete(requirePlayer(), id));
+ipcMain.handle("sandbox:upload", async (_e, input) => control.sandboxUpload(requirePlayer(), input || {}));
 
 ipcMain.handle("window:minimize", () => mainWindow?.minimize());
 ipcMain.handle("window:close", () => mainWindow?.close());

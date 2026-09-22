@@ -1,0 +1,73 @@
+# Build the AETHERION Windows launcher and attach it to a GitHub Release.
+# Tag pushes use launcher-v* so this does not run on the Android v* releases.
+# The release is not marked Latest, so it does not replace the control APK release.
+# The launcher updater finds the newest release that contains
+# AETHERION-Launcher-x.y.z.exe and latest.yml.
+
+name: AETHERION Launcher
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "launcher-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  installer:
+    name: Windows installer
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: artifacts/aetherion-launcher
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: artifacts/aetherion-launcher/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Build installer and latest.yml
+        run: npm run build
+
+      - name: Require update metadata
+        run: node -e "const fs=require('fs'); if(!fs.existsSync('release/latest.yml')) { console.error('release/latest.yml missing'); process.exit(1); }"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aetherion-launcher
+          if-no-files-found: error
+          path: |
+            artifacts/aetherion-launcher/release/AETHERION-Launcher-*.exe
+            artifacts/aetherion-launcher/release/latest.yml
+            artifacts/aetherion-launcher/release/*.blockmap
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/launcher-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: AETHERION Launcher ${{ github.ref_name }}
+          make_latest: false
+          files: |
+            artifacts/aetherion-launcher/release/AETHERION-Launcher-*.exe
+            artifacts/aetherion-launcher/release/latest.yml
+            artifacts/aetherion-launcher/release/*.blockmap
+          body: |
+            Windows installer for the AETHERION launcher.
+            Players who already installed can use the in-app Update button.
+            Upload includes AETHERION-Launcher-x.y.z.exe and latest.yml.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

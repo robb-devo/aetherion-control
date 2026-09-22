@@ -1,11 +1,13 @@
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type Response } from "express";
 import { requireAuth, requirePermission } from "../middlewares/requireAuth";
+import { normalizePlayerId, scopeForAccess, type OwnerScope } from "../lib/sandboxOwners.mjs";
 import {
   createSandbox,
   deleteSandbox,
   getSandboxOptions,
   listSandboxes,
   startSandbox,
+  uploadSandboxFile,
   type SandboxCreateInput,
   type SandboxDifficulty,
   type SandboxGamemode,
@@ -16,16 +18,46 @@ import {
 const router: IRouter = Router();
 router.use("/sandbox", requireAuth);
 
+function scopeFrom(req: Express.Request): OwnerScope {
+  const code = req.access?.code;
+  if (!code) throw new Error("Unauthorized");
+  const header = req.header("x-aetherion-player");
+  const hasHeader = header != null && String(header).trim() !== "";
+  const forwardPlayer = code === "LAUNCHER_SERVICE" || (code === "CONTROL_API_KEY" && hasHeader);
+  const playerId = forwardPlayer ? normalizePlayerId(header) : null;
+  return scopeForAccess({
+    code,
+    role: req.access?.role,
+    playerId,
+  });
+}
+
+function fail(res: Response, error: unknown, fallback: string) {
+  const message = error instanceof Error ? error.message : fallback;
+  const status = /unauthorized|sign in/i.test(message)
+    ? 401
+    : /not found/i.test(message)
+      ? 404
+      : /not enough|must be|required|exists|unsupported|available|invalid|too large|text files|path|owner/i.test(message)
+        ? 400
+        : 502;
+  res.status(status).json({ error: message });
+}
+
 router.get("/sandbox/options", requirePermission("sandbox"), async (_req, res) => {
   try {
     res.json(await getSandboxOptions());
   } catch (error) {
-    res.status(502).json({ error: error instanceof Error ? error.message : "Sandbox options failed" });
+    fail(res, error, "Sandbox options failed");
   }
 });
 
-router.get("/sandbox/servers", requirePermission("sandbox"), (_req, res) => {
-  res.json({ servers: listSandboxes() });
+router.get("/sandbox/servers", requirePermission("sandbox"), (req, res) => {
+  try {
+    res.json({ servers: listSandboxes(scopeFrom(req)) });
+  } catch (error) {
+    fail(res, error, "Sandbox list failed");
+  }
 });
 
 router.post("/sandbox/servers", requirePermission("sandbox"), async (req, res) => {
@@ -47,30 +79,36 @@ router.post("/sandbox/servers", requirePermission("sandbox"), async (req, res) =
       motd: body.motd != null ? String(body.motd) : undefined,
       startAfterCreate: body.startAfterCreate,
     };
-    const created = await createSandbox(input);
+    const created = await createSandbox(input, scopeFrom(req));
     res.status(201).json(created);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Sandbox create failed";
-    const status = /not enough|must be|required|exists|unsupported|available|invalid/i.test(message) ? 400 : 502;
-    res.status(status).json({ error: message });
+    fail(res, error, "Sandbox create failed");
   }
 });
 
 router.delete("/sandbox/servers/:id", requirePermission("sandbox"), async (req, res) => {
   try {
-    res.json(await deleteSandbox(req.params.id));
+    res.json(await deleteSandbox(String(req.params.id), scopeFrom(req)));
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Sandbox delete failed";
-    res.status(message.includes("not found") ? 404 : 502).json({ error: message });
+    fail(res, error, "Sandbox delete failed");
   }
 });
 
 router.post("/sandbox/servers/:id/start", requirePermission("sandbox"), async (req, res) => {
   try {
-    res.json(await startSandbox(req.params.id));
+    res.json(await startSandbox(String(req.params.id), scopeFrom(req)));
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Sandbox start failed";
-    res.status(message.includes("not found") ? 404 : 502).json({ error: message });
+    fail(res, error, "Sandbox start failed");
+  }
+});
+
+router.post("/sandbox/servers/:id/files", requirePermission("sandbox"), async (req, res) => {
+  try {
+    const body = req.body ?? {};
+    const content = typeof body.content === "string" ? body.content : "";
+    res.json(await uploadSandboxFile(String(req.params.id), scopeFrom(req), String(body.path ?? ""), content));
+  } catch (error) {
+    fail(res, error, "Sandbox upload failed");
   }
 });
 

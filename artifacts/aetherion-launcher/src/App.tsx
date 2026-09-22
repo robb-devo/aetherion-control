@@ -1,60 +1,62 @@
-import { useEffect, useMemo, useState } from "react";
-import type { AppState, ProgressEvent } from "./vite-env";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { AppState, ProgressEvent, Settings, UpdateStatus } from "./vite-env";
+import { PlayView } from "./components/PlayView";
+import { ServerView } from "./components/ServerView";
+import { SettingsView } from "./components/SettingsView";
+import { TitleBar } from "./components/TitleBar";
+import { AetherionMark } from "./components/Mark";
 
-type Busy = "idle" | "login" | "install" | "launch";
+type Busy = "idle" | "login" | "install" | "launch" | "running";
+type Mode = "play" | "servers" | "settings";
 
-function AetherionMark({ size = 46 }: { size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 64 64"
-      className="brand-svg"
-      aria-hidden
-    >
-      <defs>
-        <radialGradient id="ae-glow" cx="50%" cy="50%" r="50%">
-          <stop offset="0%" stopColor="currentColor" stopOpacity="0.28" />
-          <stop offset="62%" stopColor="#b89ad8" stopOpacity="0.12" />
-          <stop offset="100%" stopColor="currentColor" stopOpacity="0" />
-        </radialGradient>
-      </defs>
-      <circle cx="32" cy="32" r="30" fill="url(#ae-glow)" />
-      <circle cx="32" cy="32" r="26" fill="none" stroke="currentColor" strokeWidth="1.15" opacity="0.82" />
-      <circle cx="32" cy="32" r="22" fill="none" stroke="#b89ad8" strokeWidth="0.7" opacity="0.7" />
-      <g stroke="currentColor" strokeWidth="1" opacity="0.55">
-        <line x1="32" y1="4" x2="32" y2="10" />
-        <line x1="32" y1="54" x2="32" y2="60" />
-        <line x1="4" y1="32" x2="10" y2="32" />
-        <line x1="54" y1="32" x2="60" y2="32" />
-      </g>
-      <path
-        d="M32 16 L22 46 L26 46 L28.5 39 L35.5 39 L38 46 L42 46 L32 16 Z M30 35 L32 28 L34 35 Z"
-        fill="currentColor"
-      />
-    </svg>
-  );
+function messageOf(err: unknown) {
+  return err instanceof Error ? err.message : String(err);
 }
 
 export default function App() {
   const [state, setState] = useState<AppState | null>(null);
   const [busy, setBusy] = useState<Busy>("idle");
+  const phaseRef = useRef<Busy>("idle");
   const [progress, setProgress] = useState<ProgressEvent | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [mode, setMode] = useState<Mode>("play");
+  const [update, setUpdate] = useState<UpdateStatus | null>(null);
+
+  function setPhase(next: Busy) {
+    phaseRef.current = next;
+    setBusy(next);
+  }
 
   useEffect(() => {
-    void window.aetherion.getState().then(setState).catch((err) => {
-      setError(err instanceof Error ? err.message : String(err));
-    });
+    if (!window.aetherion) return;
+    void window.aetherion.getState().then((next) => {
+      setState(next);
+      setUpdate(next.update);
+    }).catch((err) => setError(messageOf(err)));
 
-    const offProgress = window.aetherion.onProgress((evt) => setProgress(evt));
+    const offProgress = window.aetherion.onProgress((evt) => {
+      if (phaseRef.current === "running") return;
+      setProgress(evt);
+    });
+    const offRunning = window.aetherion.onRunning(() => {
+      phaseRef.current = "running";
+      setBusy("running");
+      setProgress(null);
+    });
     const offClose = window.aetherion.onClose(() => {
+      phaseRef.current = "idle";
       setBusy("idle");
       setProgress(null);
     });
+    const offUpdate = window.aetherion.onUpdate((next) => setUpdate(next));
+    void window.aetherion.updateStatus().then(setUpdate).catch(() => {
+      /* packaged builds report this; dev has no release feed */
+    });
     return () => {
       offProgress();
+      offRunning();
       offClose();
+      offUpdate();
     };
   }, []);
 
@@ -62,8 +64,11 @@ export default function App() {
   const signedIn = Boolean(state?.account);
 
   const statusMessage = useMemo(() => {
+    if (busy === "running") return "Minecraft is running";
     if (error) return error;
-    if (progress?.message) return progress.message;
+    if ((busy === "login" || busy === "install" || busy === "launch") && progress?.message) {
+      return progress.message;
+    }
     if (busy === "login") return "Waiting for Microsoft sign-in…";
     if (busy === "install") return "Installing client pack…";
     if (busy === "launch") return "Launching Minecraft…";
@@ -72,68 +77,88 @@ export default function App() {
     return "Ready when you are.";
   }, [busy, error, packReady, progress, signedIn]);
 
-  const progressPct = Math.round((progress?.progress ?? 0) * 100);
-
   async function refresh() {
     const next = await window.aetherion.getState();
     setState(next);
+    setUpdate(next.update);
+    return next;
   }
 
   async function onLogin() {
+    if (!window.aetherion) {
+      setError("Open the AETHERION desktop app to sign in.");
+      return;
+    }
     setError(null);
-    setBusy("login");
+    setPhase("login");
     try {
       const account = await window.aetherion.login();
       setState((prev) => (prev ? { ...prev, account } : prev));
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(messageOf(err));
     } finally {
-      setBusy("idle");
+      if (phaseRef.current === "login") setPhase("idle");
     }
   }
 
   async function onLogout() {
+    if (!window.aetherion) return;
     setError(null);
     await window.aetherion.logout();
     setState((prev) => (prev ? { ...prev, account: null } : prev));
   }
 
   async function onInstall() {
+    if (!window.aetherion) {
+      setError("Open the AETHERION desktop app to install the pack.");
+      return;
+    }
     setError(null);
-    setBusy("install");
+    setPhase("install");
     setProgress({ phase: "mods", message: "Preparing pack…", progress: 0 });
     try {
       const pack = await window.aetherion.installPack();
       setState((prev) => (prev ? { ...prev, pack } : prev));
-      setProgress({ phase: "mods", message: "Pack installed", progress: 1 });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(messageOf(err));
     } finally {
-      setBusy("idle");
+      if (phaseRef.current === "install") setPhase("idle");
+      setProgress(null);
     }
   }
 
   async function onPlay() {
-    setError(null);
-    if (!signedIn) {
-      await onLogin();
+    if (!window.aetherion) {
+      setError("Open the AETHERION desktop app to play.");
       return;
     }
-    setBusy("launch");
+    setMode("play");
+    setError(null);
+    setPhase("launch");
     setProgress({ phase: "launch", message: "Preparing…", progress: 0 });
     try {
-      if (!packReady) {
-        setBusy("install");
+      let snapshot = state;
+      if (!snapshot?.account) {
+        setPhase("login");
+        await window.aetherion.login();
+        snapshot = await refresh();
+      }
+      if (!snapshot?.account) throw new Error("Sign in with Microsoft first.");
+      if (!snapshot.pack.complete) {
+        setPhase("install");
         const pack = await window.aetherion.installPack();
         setState((prev) => (prev ? { ...prev, pack } : prev));
-        setBusy("launch");
+        setPhase("launch");
       }
       await window.aetherion.play();
-      setProgress({ phase: "launch", message: "Minecraft is starting…", progress: 1 });
+      phaseRef.current = "running";
+      setBusy("running");
+      setProgress(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setBusy("idle");
+      setError(messageOf(err));
+      setPhase("idle");
+      setProgress(null);
     }
   }
 
@@ -147,168 +172,118 @@ export default function App() {
     setState((prev) => (prev ? { ...prev, settings } : prev));
   }
 
+  async function onUseNetwork() {
+    const settings = await window.aetherion.setPlayTarget({ kind: "network" });
+    setState((prev) => (prev ? { ...prev, settings } : prev));
+  }
+
+  async function onSaveAdvanced(patch: { controlApiBase?: string; controlKey?: string }) {
+    if (!window.aetherion) {
+      setError("Open the AETHERION desktop app to change the API.");
+      return;
+    }
+    const settings = await window.aetherion.updateSettings(patch);
+    setState((prev) => (prev ? { ...prev, settings } : prev));
+  }
+
+  function onSettings(next: Settings) {
+    setState((prev) => (prev ? { ...prev, settings: next } : prev));
+  }
+
+  async function onUpdate() {
+    setError(null);
+    try {
+      await window.aetherion.startUpdate();
+    } catch (err) {
+      setError(messageOf(err));
+    }
+  }
+
+  const version = state?.appVersion ?? update?.currentVersion ?? "1.3.1";
+
   return (
     <div className="app">
       <div className="backdrop" aria-hidden>
         <div className="backdrop-image" />
         <div className="backdrop-scrim" />
-        <div className="backdrop-vignette" />
       </div>
 
-      <header className="titlebar">
-        <div className="titlebar-brand">AETHERION</div>
-        <div className="titlebar-actions">
-          <button type="button" aria-label="Minimize" onClick={() => void window.aetherion.minimize()}>
-            ─
-          </button>
-          <button
-            type="button"
-            className="close"
-            aria-label="Close"
-            onClick={() => void window.aetherion.close()}
-          >
-            ✕
-          </button>
-        </div>
-      </header>
+      <TitleBar />
 
-      <main className="stage">
-        <section className="hero">
-          <div className="brand-mark">
-            <AetherionMark size={52} />
-            <div className="brand-text">
-              <h1>AETHERION</h1>
-              <p className="kicker">
-                <span className="kicker-accent">Ethereal Realm</span>
-                <span className="kicker-dot">·</span>
-                <span>Fabric 1.21.1</span>
-              </p>
+      <div className="shell">
+        <nav className="nav" aria-label="Sections">
+          <div className="nav-brand">
+            <AetherionMark size={36} />
+            <div>
+              <strong>AETHERION</strong>
+              <span>Launcher</span>
             </div>
           </div>
 
-          <p className="tagline">
-            Cross the veil. One client pack, Microsoft sign-in, and a direct join to the
-            network — no clutter, no fake stats.
-          </p>
-
-          <div className="cta-row">
-            <button
-              type="button"
-              className={`play-btn ${busy === "launch" || busy === "install" ? "busy" : ""}`}
-              disabled={busy !== "idle" && busy !== "launch"}
-              onClick={() => void onPlay()}
-            >
-              {!signedIn ? "Sign in & Play" : packReady ? "Play" : "Install & Play"}
+          <div className="nav-links" role="tablist">
+            <button type="button" role="tab" aria-selected={mode === "play"} className={mode === "play" ? "on" : ""} onClick={() => setMode("play")}>
+              Play
             </button>
-            <button
-              type="button"
-              className="ghost-btn"
-              disabled={busy !== "idle"}
-              onClick={() => void onInstall()}
-            >
-              {packReady ? "Repair pack" : "Download pack"}
+            <button type="button" role="tab" aria-selected={mode === "servers"} className={mode === "servers" ? "on" : ""} onClick={() => setMode("servers")}>
+              Servers
+            </button>
+            <button type="button" role="tab" aria-selected={mode === "settings"} className={mode === "settings" ? "on" : ""} onClick={() => setMode("settings")}>
+              Settings
+              {update?.available ? <i className="nav-dot" /> : null}
             </button>
           </div>
 
-          <div className="status-line">
-            <div className={`status-text ${error ? "error" : ""}`}>{statusMessage}</div>
-            {(busy === "install" || busy === "launch" || (progress && progress.progress < 1)) && (
-              <div className="progress" aria-hidden>
-                <span style={{ width: `${Math.max(4, progressPct)}%` }} />
-              </div>
-            )}
-          </div>
-        </section>
+          <button type="button" className="nav-account" onClick={() => (signedIn ? setMode("settings") : void onLogin())}>
+            <span className={`avatar ${signedIn ? "live" : ""}`}>
+              {state?.account?.avatar ? <img src={state.account.avatar} alt="" /> : null}
+            </span>
+            <span className="nav-account-meta">
+              <strong>{state?.account?.name ?? "Sign in"}</strong>
+              <em>{signedIn ? "Microsoft" : "Required to play"}</em>
+            </span>
+          </button>
+        </nav>
 
-        <aside className="panel">
-          <div className="panel-section">
-            <div className="panel-label">Account</div>
-            <div className="account-row">
-              <div className="avatar">
-                {state?.account?.avatar ? <img src={state.account.avatar} alt="" /> : null}
-              </div>
-              <div className="account-meta">
-                <strong>{state?.account?.name ?? "Not signed in"}</strong>
-                <span>{signedIn ? "Microsoft account" : "Required to launch"}</span>
-              </div>
-              {signedIn ? (
-                <button type="button" className="linkish" onClick={() => void onLogout()}>
-                  Sign out
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="linkish"
-                  disabled={busy !== "idle"}
-                  onClick={() => void onLogin()}
-                >
-                  Sign in
-                </button>
-              )}
-            </div>
-          </div>
-
-          <div className="divider" />
-
-          <div className="panel-section">
-            <div className="panel-label">Client</div>
-            <div className="stat-grid">
-              <div className="stat">
-                <em>Pack</em>
-                <strong className={packReady ? "ok" : "warn"}>
-                  {state ? `${state.pack.present}/${state.pack.total} mods` : "—"}
-                </strong>
-              </div>
-              <div className="stat">
-                <em>Server</em>
-                <strong>{state?.settings.serverAddress ?? "play.donnernet.de"}</strong>
-              </div>
-              <div className="stat">
-                <em>Minecraft</em>
-                <strong>{state?.pack.minecraft ?? "1.21.1"}</strong>
-              </div>
-              <div className="stat">
-                <em>Loader</em>
-                <strong>Fabric {state?.pack.loader ?? "—"}</strong>
-              </div>
-            </div>
-          </div>
-
-          <div className="divider" />
-
-          <div className="panel-section">
-            <div className="ram-row">
-              <div className="panel-label">Memory</div>
-              <div className="ram-value">{state?.settings.ramGb ?? 6} GB</div>
-            </div>
-            <input
-              type="range"
-              min={2}
-              max={16}
-              step={1}
-              value={state?.settings.ramGb ?? 6}
-              disabled={!state || busy !== "idle"}
-              onChange={(e) => void onRam(Number(e.target.value))}
+        <main className={`content content-${mode}`}>
+          {error && mode !== "play" ? <p className="form-error page-error">{error}</p> : null}
+          {mode === "play" ? (
+            <PlayView
+              state={state}
+              busy={busy}
+              progress={progress}
+              error={error}
+              statusMessage={statusMessage}
+              version={version}
+              onPlay={() => void onPlay()}
+              onInstall={() => void onInstall()}
+              onUseNetwork={() => void onUseNetwork()}
             />
-          </div>
-
-          <div className="panel-section">
-            <button
-              type="button"
-              className="toggle"
-              disabled={!state || busy !== "idle"}
-              onClick={() => void onAutoJoin(!(state?.settings.autoJoin ?? true))}
-            >
-              <span>Auto-join server on launch</span>
-              <span className={`toggle-switch ${(state?.settings.autoJoin ?? true) ? "on" : ""}`}>
-                <span />
-              </span>
-            </button>
-          </div>
-
-          <div className="footer-note">v{state?.appVersion ?? "1.2.3"} · Windows</div>
-        </aside>
-      </main>
+          ) : null}
+          {mode === "servers" ? (
+            <ServerView
+              signedIn={signedIn}
+              launchBusy={busy === "launch" || busy === "install" || busy === "login" || busy === "running"}
+              onLogin={() => void onLogin()}
+              onSettings={onSettings}
+              onPlay={onPlay}
+            />
+          ) : null}
+          {mode === "settings" ? (
+            <SettingsView
+              state={state}
+              busy={busy}
+              update={update}
+              version={version}
+              onLogin={() => void onLogin()}
+              onLogout={() => void onLogout()}
+              onRam={(value) => void onRam(value)}
+              onAutoJoin={(value) => void onAutoJoin(value)}
+              onSaveAdvanced={onSaveAdvanced}
+              onUpdate={() => void onUpdate()}
+            />
+          ) : null}
+        </main>
+      </div>
     </div>
   );
 }

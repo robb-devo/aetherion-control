@@ -415,7 +415,7 @@ export default function ToolsScreen() {
         <SectionTitle title="Active sandboxes" eyebrow="ISOLATED FLEET" />
         <View style={styles.list}>
           {sandboxes.length === 0 ? (
-            <Text style={[styles.hint, { color: colors.mutedForeground }]}>No sandboxes yet — pool is fully free.</Text>
+            <Text style={[styles.hint, { color: colors.mutedForeground }]}>No sandboxes for this access code yet.</Text>
           ) : (
             sandboxes.map((server) => (
               <View key={server.id} style={[styles.sandboxCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
