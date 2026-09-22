@@ -27,12 +27,13 @@ import {
   saveCraftyFile,
   sendCraftyCommand,
 } from "../lib/crafty";
-import { requireAuth } from "../middlewares/requireAuth";
+import { requireAuth, requirePermission } from "../middlewares/requireAuth";
 
 const router: IRouter = Router();
 const allowedActions = new Set(["start_server", "stop_server", "restart_server", "kill_server", "backup_server"]);
 
 router.use("/crafty", requireAuth);
+router.use("/crafty", requirePermission("servers.read"));
 
 router.get("/crafty/health", async (_req, res) => {
   try {
@@ -81,7 +82,7 @@ router.post("/crafty/servers/:id/files/query", async (req, res): Promise<void> =
   }
 });
 
-router.put("/crafty/servers/:id/files", async (req, res): Promise<void> => {
+router.put("/crafty/servers/:id/files", requirePermission("servers.files"), async (req, res): Promise<void> => {
   const params = SaveCraftyServerFileParams.safeParse(req.params);
   const body = SaveCraftyServerFileBody.safeParse(req.body);
   if (!params.success || !body.success) {
@@ -97,7 +98,7 @@ router.put("/crafty/servers/:id/files", async (req, res): Promise<void> => {
   }
 });
 
-router.delete("/crafty/servers/:id/files", async (req, res): Promise<void> => {
+router.delete("/crafty/servers/:id/files", requirePermission("servers.files"), async (req, res): Promise<void> => {
   const params = DeleteCraftyServerFileParams.safeParse(req.params);
   const body = DeleteCraftyServerFileBody.safeParse(req.body);
   if (!params.success || !body.success) {
@@ -139,28 +140,28 @@ router.get("/crafty/servers/:id/backups", async (req, res): Promise<void> => {
   }
 });
 
-router.post("/crafty/servers/:id/action", async (req, res) => {
+router.post("/crafty/servers/:id/action", requirePermission("servers.action"), async (req, res) => {
   const action = typeof req.body?.action === "string" ? req.body.action : "";
   if (!allowedActions.has(action)) {
     res.status(400).json({ error: "Unsupported Crafty action" });
     return;
   }
   try {
-    await runCraftyAction(req.params.id, action);
+    await runCraftyAction(String(req.params.id), action);
     res.json({ ok: true, action });
   } catch (error) {
     res.status(502).json({ error: error instanceof Error ? error.message : "Crafty action failed" });
   }
 });
 
-router.post("/crafty/servers/:id/command", async (req, res) => {
+router.post("/crafty/servers/:id/command", requirePermission("servers.command"), async (req, res) => {
   const command = typeof req.body?.command === "string" ? req.body.command.trim() : "";
   if (!command || command.length > 240) {
     res.status(400).json({ error: "Command must contain between 1 and 240 characters" });
     return;
   }
   try {
-    await sendCraftyCommand(req.params.id, command);
+    await sendCraftyCommand(String(req.params.id), command);
     res.json({ ok: true });
   } catch (error) {
     res.status(502).json({ error: error instanceof Error ? error.message : "Crafty command failed" });
