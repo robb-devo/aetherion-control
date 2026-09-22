@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Updating AETHERION</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Segoe UI", sans-serif;
+        background: #100e16;
+        color: #f5f0e6;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+      }
+      body {
+        display: grid;
+        place-items: center;
+        background:
+          radial-gradient(ellipse at 50% 0%, rgba(224, 196, 138, 0.16), transparent 55%),
+          #100e16;
+      }
+      .card {
+        width: min(380px, calc(100% - 36px));
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .brand {
+        font-size: 11px;
+        letter-spacing: 0.28em;
+        text-transform: uppercase;
+        color: #e0c48a;
+      }
+      h1 {
+        margin: 0;
+        font-size: 18px;
+        font-weight: 560;
+        letter-spacing: 0.02em;
+      }
+      p {
+        margin: 0;
+        min-height: 18px;
+        color: #c4b9a8;
+        font-size: 13px;
+      }
+      .bar {
+        height: 4px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.08);
+        overflow: hidden;
+      }
+      .bar span {
+        display: block;
+        height: 100%;
+        width: 0%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, #b8924a, #e0c48a);
+        transition: width 0.25s ease;
+      }
+      button {
+        align-self: flex-start;
+        margin-top: 4px;
+        border: 0;
+        background: transparent;
+        color: #c4b9a8;
+        font: inherit;
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        cursor: pointer;
+        padding: 0;
+      }
+      p.error {
+        color: #ff8d8d;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="brand">AETHERION</div>
+      <h1>Updating</h1>
+      <p id="detail">Preparing the new version…</p>
+      <div class="bar" aria-hidden="true"><span id="fill"></span></div>
+      <button id="cancel" type="button">Back</button>
+    </div>
+    <script>
+      const detail = document.getElementById("detail");
+      const fill = document.getElementById("fill");
+      const cancel = document.getElementById("cancel");
+      window.aetherionUpdater.onStatus((payload) => {
+        detail.textContent = payload.message || "Working…";
+        detail.classList.toggle("error", Boolean(payload.error));
+        fill.style.width = `${Math.max(4, payload.percent || 0)}%`;
+        cancel.hidden = !payload.error;
+      });
+      cancel.hidden = true;
+      cancel.addEventListener("click", () => {
+        void window.aetherionUpdater.cancel();
+      });
+    </script>
+  </body>
+</html>

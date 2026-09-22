@@ -2,63 +2,96 @@ const fs = require("node:fs");
 const path = require("node:path");
 const zlib = require("node:zlib");
 const nbt = require("prismarine-nbt");
-const { ensureDir } = require("./paths.cjs");
 
 function normalizeIp(address, port) {
   const raw = String(address || "").trim();
   if (!raw) return "play.donnernet.de";
   if (raw.includes(":")) return raw;
-  if (port && Number(port) !== 25565) return `${raw}:${port}`;
+  const parsed = Number(port);
+  if (Number.isInteger(parsed) && parsed !== 25565) return `${raw}:${parsed}`;
   return raw;
 }
 
+function ensureDir(dir) {
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function serverTag(entry) {
+  const value = {
+    name: { type: "string", value: entry.name },
+    ip: { type: "string", value: entry.ip },
+    hidden: { type: "byte", value: entry.hidden ? 1 : 0 },
+  };
+  if (typeof entry.acceptTextures === "number") {
+    value.acceptTextures = { type: "byte", value: entry.acceptTextures ? 1 : 0 };
+  }
+  if (typeof entry.icon === "string" && entry.icon.length > 0) {
+    value.icon = { type: "string", value: entry.icon };
+  }
+  return value;
+}
+
+async function readServers(file) {
+  if (!fs.existsSync(file)) return [];
+  try {
+    const buf = fs.readFileSync(file);
+    const { parsed } = await nbt.parse(buf);
+    const simple = nbt.simplify(parsed);
+    if (!Array.isArray(simple.servers)) return [];
+    return simple.servers.map((entry) => ({
+      name: String(entry?.name || "Minecraft Server"),
+      ip: String(entry?.ip || ""),
+      hidden: Boolean(entry?.hidden),
+      acceptTextures: typeof entry?.acceptTextures === "number" ? (entry.acceptTextures ? 1 : 0) : undefined,
+      icon: typeof entry?.icon === "string" ? entry.icon : undefined,
+    }));
+  } catch (err) {
+    console.warn("Could not read servers.dat, recreating:", err);
+    return [];
+  }
+}
+
 /**
- * Ensure AETHERION is present in the Minecraft multiplayer server list
- * (instance/servers.dat). Updates IP if an entry with the same name exists.
+ * Upsert servers into `<gameDir>/servers.dat`.
+ * Minecraft reads this file from the directory passed as `--gameDir`
+ * (`overrides.gameDirectory` in minecraft-launcher-core). Callers must pass
+ * that same directory.
+ *
+ * Entries are matched by name only, so the AETHERION network address is never
+ * replaced by a sandbox that happens to be selected, and a sandbox is never
+ * renamed to AETHERION.
  */
-async function ensureServerEntry(instanceDir, server) {
-  ensureDir(instanceDir);
-  const file = path.join(instanceDir, "servers.dat");
-  const name = server?.name || "AETHERION";
-  const ip = normalizeIp(server?.address, server?.port);
+async function ensureServerEntries(instanceDir, servers) {
+  const gameDir = path.resolve(instanceDir);
+  ensureDir(gameDir);
+  const file = path.join(gameDir, "servers.dat");
+  const wanted = (Array.isArray(servers) ? servers : [])
+    .map((server) => ({
+      name: String(server?.name || "AETHERION").trim() || "AETHERION",
+      ip: normalizeIp(server?.address, server?.port),
+    }))
+    .filter((server) => server.ip);
 
-  /** @type {{ name: string, ip: string, hidden: boolean }[]} */
-  let list = [];
+  let list = await readServers(file);
+  const ensured = [];
 
-  if (fs.existsSync(file)) {
-    try {
-      const buf = fs.readFileSync(file);
-      const { parsed } = await nbt.parse(buf);
-      const simple = nbt.simplify(parsed);
-      if (Array.isArray(simple.servers)) {
-        list = simple.servers.map((entry) => ({
-          name: String(entry.name || "Minecraft Server"),
-          ip: String(entry.ip || ""),
-          hidden: Boolean(entry.hidden),
-        }));
-      }
-    } catch (err) {
-      console.warn("Could not read servers.dat, recreating:", err);
-      list = [];
+  for (const server of wanted) {
+    const nameKey = server.name.toLowerCase();
+    const existing = list.find((entry) => entry.name.toLowerCase() === nameKey);
+    if (existing) {
+      list = list.filter((entry) => entry.name.toLowerCase() !== nameKey);
     }
+    ensured.push({
+      name: server.name,
+      ip: server.ip,
+      hidden: false,
+      acceptTextures: existing?.acceptTextures,
+      icon: existing?.icon,
+    });
   }
 
-  const nameKey = name.toLowerCase();
-  const ipKey = ip.toLowerCase();
-  const existingIdx = list.findIndex(
-    (s) => s.name.toLowerCase() === nameKey || s.ip.toLowerCase() === ipKey,
-  );
-
-  if (existingIdx >= 0) {
-    list[existingIdx] = { name, ip, hidden: false };
-    // Keep AETHERION at the top
-    if (existingIdx !== 0) {
-      const [entry] = list.splice(existingIdx, 1);
-      list.unshift(entry);
-    }
-  } else {
-    list.unshift({ name, ip, hidden: false });
-  }
+  list = [...ensured, ...list];
 
   const nbtData = {
     type: "compound",
@@ -68,22 +101,38 @@ async function ensureServerEntry(instanceDir, server) {
         type: "list",
         value: {
           type: "compound",
-          value: list.map((entry) => ({
-            name: { type: "string", value: entry.name },
-            ip: { type: "string", value: entry.ip },
-            hidden: { type: "byte", value: entry.hidden ? 1 : 0 },
-          })),
+          value: list.map(serverTag),
         },
       },
     },
   };
 
-  const uncompressed = nbt.writeUncompressed(nbtData);
+  const uncompressed = await Promise.resolve(nbt.writeUncompressed(nbtData, "big"));
+  if (!Buffer.isBuffer(uncompressed)) {
+    throw new Error("Server list NBT writer did not return a buffer.");
+  }
   fs.writeFileSync(file, zlib.gzipSync(uncompressed));
-  return { name, ip, count: list.length };
+
+  const written = await readServers(file);
+  for (const server of ensured) {
+    const found = written.find((entry) => entry.name === server.name && entry.ip === server.ip && !entry.hidden);
+    if (!found) {
+      throw new Error(`Server list was not saved at ${file}`);
+    }
+  }
+
+  return { file, gameDir, servers: written, count: written.length };
+}
+
+async function ensureServerEntry(instanceDir, server) {
+  const result = await ensureServerEntries(instanceDir, [server]);
+  const name = server?.name || "AETHERION";
+  const ip = normalizeIp(server?.address, server?.port);
+  return { name, ip, count: result.count, file: result.file, gameDir: result.gameDir };
 }
 
 module.exports = {
   ensureServerEntry,
+  ensureServerEntries,
   normalizeIp,
 };

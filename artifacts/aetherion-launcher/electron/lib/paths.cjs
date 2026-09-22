@@ -18,6 +18,7 @@ function paths() {
     root,
     settings: path.join(root, "settings.json"),
     account: path.join(root, "account.json"),
+    control: path.join(root, "control-session.json"),
     runtime: ensureDir(path.join(root, "runtime")),
     javaHome: path.join(root, "runtime", "jdk-21"),
     minecraft: ensureDir(path.join(root, "minecraft")),

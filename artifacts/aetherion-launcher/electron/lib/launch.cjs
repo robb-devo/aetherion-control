@@ -5,7 +5,7 @@ const { Client } = require("minecraft-launcher-core");
 const { paths, getSettings, loadManifest } = require("./paths.cjs");
 const { ensureJava } = require("./java.cjs");
 const { ensureFabricProfile, syncMods } = require("./pack.cjs");
-const { ensureServerEntry, normalizeIp } = require("./servers.cjs");
+const { syncInstanceServers, quickPlayAddress } = require("./serverlist.cjs");
 
 let activeClient = null;
 let activeProcess = null;
@@ -82,20 +82,15 @@ async function prepareAndLaunch({ authorization, send }) {
   emitProgress(send, { phase: "vanilla", message: "Preparing Minecraft assets…", progress: 0 });
   await syncMods(manifest, (evt) => emitProgress(send, evt));
 
-  const serverAddress = normalizeIp(
-    settings.serverAddress || manifest.server.address,
-    manifest.server.port,
-  );
   const ramGb = Math.max(2, Math.min(32, Number(settings.ramGb) || 6));
   // Keep min == max so the heap never resizes mid-session.
   const minGb = ramGb;
+  // Same directory MCLC passes as --gameDir / ${game_directory}.
+  const gameDir = p.instance;
 
   emitProgress(send, { phase: "server", message: "Updating server list…", progress: 1 });
-  await ensureServerEntry(p.instance, {
-    name: manifest.server.name || "AETHERION",
-    address: serverAddress,
-    port: manifest.server.port,
-  });
+  await syncInstanceServers(gameDir, manifest, settings);
+  const serverAddress = quickPlayAddress(manifest, settings);
 
   const client = new Client();
   activeClient = client;
@@ -115,6 +110,10 @@ async function prepareAndLaunch({ authorization, send }) {
   client.on("close", (code) => {
     activeClient = null;
     activeProcess = null;
+    // Minecraft rewrites servers.dat on exit. Put AETHERION back if that save dropped it.
+    void syncInstanceServers(gameDir, manifest, getSettings()).catch((err) => {
+      console.warn("Could not restore server list after exit:", err);
+    });
     send?.("launch:close", { code });
   });
 
@@ -135,8 +134,8 @@ async function prepareAndLaunch({ authorization, send }) {
     javaPath,
     customArgs: javaArgsForClient(),
     overrides: {
-      gameDirectory: p.instance,
-      cwd: p.instance,
+      gameDirectory: gameDir,
+      cwd: gameDir,
       maxSockets: 4,
       detached: true,
     },

@@ -8,7 +8,9 @@ import {
   runCraftyAction,
   saveCraftyFile,
   getCraftyFiles,
+  normalizeServerPath,
 } from "./crafty";
+import { findOwned, omitOwner, visibleToOwner, type OwnerScope } from "./sandboxOwners.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -51,6 +53,8 @@ export type SandboxRecord = {
   motd: string;
   port: number;
   createdAt: string;
+  /** sha256 of the access identity. Absent only on rows created before scoping. */
+  ownerId?: string;
 };
 
 const STORE = process.env.SANDBOX_STORE_PATH || "/var/lib/aetherion-control/sandboxes.json";
@@ -235,14 +239,19 @@ export async function getSandboxOptions() {
   };
 }
 
-export function listSandboxes() {
-  return loadStore().map((row) => ({
-    ...row,
+function publicSandbox(row: SandboxRecord) {
+  return {
+    ...omitOwner(row),
     address: `${PUBLIC_IP}:${row.port}`,
-  }));
+  };
 }
 
-export async function createSandbox(input: SandboxCreateInput) {
+export function listSandboxes(scope: OwnerScope) {
+  return visibleToOwner(loadStore(), scope).map((row) => publicSandbox(row));
+}
+
+export async function createSandbox(input: SandboxCreateInput, scope: OwnerScope) {
+  if (!scope?.ownerId) throw new Error("Missing sandbox owner.");
   const name = sanitizeName(input.name);
   const serverType = input.serverType;
   const version = String(input.version || "").trim();
@@ -398,6 +407,7 @@ export async function createSandbox(input: SandboxCreateInput) {
     motd,
     port,
     createdAt: new Date().toISOString(),
+    ownerId: scope.ownerId,
   };
   rows.push(record);
   saveStore(rows);
@@ -420,15 +430,12 @@ export async function createSandbox(input: SandboxCreateInput) {
     }
   }
 
-  return {
-    ...record,
-    address: `${PUBLIC_IP}:${port}`,
-  };
+  return publicSandbox(record);
 }
 
-export async function deleteSandbox(id: string) {
+export async function deleteSandbox(id: string, scope: OwnerScope) {
   const rows = loadStore();
-  const target = rows.find((row) => row.id === id);
+  const target = findOwned(rows, id, scope);
   if (!target) throw new Error("Sandbox not found.");
 
   try {
@@ -467,9 +474,25 @@ async function waitForJar(id: string, executable: string, attempts = 40) {
   return false;
 }
 
-export async function startSandbox(id: string) {
+const MAX_TEXT_BYTES = 256 * 1024;
+const BLOCKED_UPLOAD = /\.(jar|zip|exe|dll|png|jpg|jpeg|webp|gif|ogg|mp3|nbt|dat|gz|7z|rar|bin|class)$/i;
+
+export async function uploadSandboxFile(id: string, scope: OwnerScope, requestedPath: string, content: string) {
+  if (typeof content !== "string") throw new Error("File content must be text.");
+  if (content.includes("\0")) throw new Error("Only text files can be uploaded.");
+  if (Buffer.byteLength(content, "utf8") > MAX_TEXT_BYTES) {
+    throw new Error("File is too large (256 KB max).");
+  }
+  const safePath = normalizeServerPath(requestedPath, false);
+  if (BLOCKED_UPLOAD.test(safePath)) throw new Error("Only text files can be uploaded.");
+  if (!findOwned(loadStore(), id, scope)) throw new Error("Sandbox not found.");
+  await saveCraftyFile(id, safePath, content);
+  return { ok: true as const, path: safePath };
+}
+
+export async function startSandbox(id: string, scope: OwnerScope) {
   const rows = loadStore();
-  const target = rows.find((row) => row.id === id);
+  const target = findOwned(rows, id, scope);
   if (!target) throw new Error("Sandbox not found.");
 
   try {
