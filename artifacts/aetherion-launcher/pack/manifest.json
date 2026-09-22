@@ -1,0 +1,105 @@
+{
+  "id": "aetherion-client",
+  "name": "AETHERION",
+  "version": "1.2.3",
+  "minecraft": "1.21.1",
+  "loader": {
+    "type": "fabric",
+    "version": "0.19.5"
+  },
+  "server": {
+    "name": "AETHERION",
+    "address": "play.donnernet.de",
+    "port": 25565
+  },
+  "java": {
+    "major": 21
+  },
+  "notes": "Lean OptiFine-for-Fabric stack. Sodium+Iris replace OptiFine. Server ships its own resource pack.",
+  "mods": [
+    {
+      "slug": "fabric-api",
+      "filename": "fabric-api-0.116.17+1.21.1.jar",
+      "url": "https://cdn.modrinth.com/data/P7dR8mSH/versions/Mys3P7lK/fabric-api-0.116.17%2B1.21.1.jar"
+    },
+    {
+      "slug": "sodium",
+      "filename": "sodium-fabric-0.6.13+mc1.21.1.jar",
+      "url": "https://cdn.modrinth.com/data/AANobbMI/versions/u1OEbNKx/sodium-fabric-0.6.13%2Bmc1.21.1.jar"
+    },
+    {
+      "slug": "iris",
+      "filename": "iris-fabric-1.8.8+mc1.21.1.jar",
+      "url": "https://cdn.modrinth.com/data/YL57xq9U/versions/zsoi0dso/iris-fabric-1.8.8%2Bmc1.21.1.jar"
+    },
+    {
+      "slug": "scalablelux",
+      "filename": "ScalableLux-0.1.0.1+fabric.d0d58ab-all.jar",
+      "url": "https://cdn.modrinth.com/data/Ps1zyz6x/versions/Yx1tgJMI/ScalableLux-0.1.0.1%2Bfabric.d0d58ab-all.jar"
+    },
+    {
+      "slug": "lithium",
+      "filename": "lithium-fabric-0.15.0+mc1.21.1.jar",
+      "url": "https://cdn.modrinth.com/data/gvQqBUqZ/versions/MM5BBBOK/lithium-fabric-0.15.0%2Bmc1.21.1.jar"
+    },
+    {
+      "slug": "entityculling",
+      "filename": "entityculling-fabric-1.8.0-mc1.21.jar",
+      "url": "https://cdn.modrinth.com/data/NNAgCjsB/versions/wZSIbKbB/entityculling-fabric-1.8.0-mc1.21.jar"
+    },
+    {
+      "slug": "immediatelyfast",
+      "filename": "ImmediatelyFast-Fabric-1.6.5+1.21.1.jar",
+      "url": "https://cdn.modrinth.com/data/5ZwdcRci/versions/UDgEo3mK/ImmediatelyFast-Fabric-1.6.5%2B1.21.1.jar"
+    },
+    {
+      "slug": "ferrite-core",
+      "filename": "ferritecore-7.0.3-fabric.jar",
+      "url": "https://cdn.modrinth.com/data/uXXizFIs/versions/sOzRw3CG/ferritecore-7.0.3-fabric.jar"
+    },
+    {
+      "slug": "modmenu",
+      "filename": "modmenu-11.0.4.jar",
+      "url": "https://cdn.modrinth.com/data/mOgUt4GM/versions/v6Xx3fbU/modmenu-11.0.4.jar"
+    },
+    {
+      "slug": "cloth-config",
+      "filename": "cloth-config-15.0.140-fabric.jar",
+      "url": "https://cdn.modrinth.com/data/9s6osm5g/versions/HpMb5wGb/cloth-config-15.0.140-fabric.jar"
+    },
+    {
+      "slug": "xaeros-minimap",
+      "filename": "xaerominimap-fabric-1.21.1-26.5.0.jar",
+      "url": "https://cdn.modrinth.com/data/1bokaNcj/versions/ZD6hK4GV/xaerominimap-fabric-1.21.1-26.5.0.jar"
+    },
+    {
+      "slug": "cit-resewn",
+      "filename": "citresewn-1.2.2+1.21.jar",
+      "url": "https://cdn.modrinth.com/data/otVJckYQ/versions/JUnP9V1A/citresewn-1.2.2%2B1.21.jar"
+    },
+    {
+      "slug": "iceberg",
+      "filename": "Iceberg-1.21.1-fabric-1.3.2.jar",
+      "url": "https://cdn.modrinth.com/data/5faXoLqX/versions/7ITFAyW8/Iceberg-1.21.1-fabric-1.3.2.jar"
+    },
+    {
+      "slug": "prism-lib",
+      "filename": "Prism-1.21.1-fabric-1.0.11.jar",
+      "url": "https://cdn.modrinth.com/data/1OE8wbN0/versions/obM5d9Uv/Prism-1.21.1-fabric-1.0.11.jar"
+    },
+    {
+      "slug": "legendary-tooltips",
+      "filename": "LegendaryTooltips-1.21.1-fabric-1.5.5.jar",
+      "url": "https://cdn.modrinth.com/data/atHH8NyV/versions/f4suO4vX/LegendaryTooltips-1.21.1-fabric-1.5.5.jar"
+    }
+  ],
+  "shaderpacks": [
+    {
+      "slug": "complementary-reimagined",
+      "filename": "ComplementaryReimagined_r5.9.3.zip",
+      "url": "https://cdn.modrinth.com/data/HVnmMxH1/versions/Bqen1mJX/ComplementaryReimagined_r5.9.3.zip",
+      "enable": true
+    }
+  ],
+  "resourcepacks": []
+}

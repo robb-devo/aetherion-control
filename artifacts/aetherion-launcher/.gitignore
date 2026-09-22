@@ -1,0 +1,13 @@
+﻿node_modules/
+dist/
+release/
+release-123/
+out/
+.vite/
+*.log
+.DS_Store
+_extract_122/
+_extract_asar/
+*.exe
+*.blockmap
+*.asar.unpacked/
