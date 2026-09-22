@@ -8,6 +8,7 @@ import test from "node:test";
 import express, { type Express } from "express";
 import { DEFAULT_LAUNCHER_SERVICE_KEY } from "./bearerAuth.mjs";
 import { ownerIdFor } from "./sandboxOwners.mjs";
+import { sandboxPresetCatalog } from "./sandbox";
 import { requireAuth, requirePermission } from "../middlewares/requireAuth";
 import sandboxRouter from "../routes/sandbox";
 
@@ -34,6 +35,22 @@ async function hit(
   const body = text ? (JSON.parse(text) as { error?: string; servers?: { id: string }[]; code?: string }) : {};
   return { status: response.status, body };
 }
+
+test("sandbox presets offer 16 GB by default and 24 GB without raising core caps", () => {
+  const catalog = sandboxPresetCatalog();
+  assert.equal(catalog.defaultPreset, "balanced");
+  assert.equal(catalog.defaultRamGb, 16);
+  assert.equal(catalog.presets.balanced.ramGb, 16);
+  assert.equal(catalog.presets.balanced.label, "16 GB");
+  assert.equal(catalog.presets.large.ramGb, 24);
+  assert.equal(catalog.presets.large.label, "24 GB");
+  assert.equal(catalog.maxRamGb, 24);
+  assert.ok(catalog.poolGb >= 24);
+  assert.equal(catalog.maxCores, 4);
+  assert.equal(catalog.poolCores, 8);
+  assert.ok(catalog.presets.balanced.cpuCores <= catalog.maxCores);
+  assert.ok(catalog.presets.large.cpuCores <= catalog.maxCores);
+});
 
 test("launcher friend key scopes sandboxes and cannot call the control plane", async () => {
   const previous = {

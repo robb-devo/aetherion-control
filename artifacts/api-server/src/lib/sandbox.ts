@@ -15,7 +15,7 @@ import { findOwned, omitOwner, visibleToOwner, type OwnerScope } from "./sandbox
 const execFileAsync = promisify(execFile);
 
 export type SandboxType = "vanilla" | "paper" | "fabric" | "purpur";
-export type SandboxPreset = "light" | "balanced" | "performance" | "max" | "custom";
+export type SandboxPreset = "light" | "balanced" | "performance" | "max" | "large" | "custom";
 export type SandboxDifficulty = "peaceful" | "easy" | "normal" | "hard";
 export type SandboxGamemode = "survival" | "creative" | "adventure" | "spectator";
 
@@ -61,8 +61,8 @@ function storePath() {
   return process.env.SANDBOX_STORE_PATH || "/var/lib/aetherion-control/sandboxes.json";
 }
 
-const POOL_GB = Number(process.env.SANDBOX_POOL_GB || 16);
-const MAX_GB = Number(process.env.SANDBOX_MAX_GB || 8);
+const POOL_GB = Number(process.env.SANDBOX_POOL_GB || 64);
+const MAX_GB = Number(process.env.SANDBOX_MAX_GB || 24);
 const POOL_CORES = Number(process.env.SANDBOX_POOL_CORES || 8);
 const MAX_CORES = Number(process.env.SANDBOX_MAX_CORES || 4);
 const PORT_START = Number(process.env.SANDBOX_PORT_START || 25600);
@@ -79,12 +79,32 @@ type JarCache = {
   };
 };
 
+/**
+ * `balanced` is 16 GB because the desktop launcher preselects that preset id.
+ * `large` is the 24 GB choice. Core caps stay 4 per sandbox and 8 in the pool.
+ * These rows are new Crafty servers in the sandbox port range only.
+ */
 const PRESETS: Record<Exclude<SandboxPreset, "custom">, { ramGb: number; cpuCores: number; label: string; blurb: string }> = {
   light: { ramGb: 2, cpuCores: 1, label: "Light", blurb: "Quick tests · tiny worlds" },
-  balanced: { ramGb: 4, cpuCores: 2, label: "Balanced", blurb: "Friends / casual play" },
   performance: { ramGb: 6, cpuCores: 3, label: "Performance", blurb: "Mods & heavier worlds" },
-  max: { ramGb: 8, cpuCores: 4, label: "Max", blurb: "Full sandbox ceiling" },
+  max: { ramGb: 8, cpuCores: 4, label: "Max", blurb: "Heavier sandbox, still under 16 GB" },
+  balanced: { ramGb: 16, cpuCores: 4, label: "16 GB", blurb: "Default · friends on spare RAM" },
+  large: { ramGb: 24, cpuCores: 4, label: "24 GB", blurb: "Largest sandbox preset" },
 };
+
+export const DEFAULT_SANDBOX_PRESET: Exclude<SandboxPreset, "custom"> = "balanced";
+
+export function sandboxPresetCatalog() {
+  return {
+    defaultPreset: DEFAULT_SANDBOX_PRESET,
+    defaultRamGb: PRESETS[DEFAULT_SANDBOX_PRESET].ramGb,
+    maxRamGb: MAX_GB,
+    poolGb: POOL_GB,
+    maxCores: MAX_CORES,
+    poolCores: POOL_CORES,
+    presets: PRESETS,
+  };
+}
 
 function loadStore(): SandboxRecord[] {
   try {
@@ -228,11 +248,14 @@ export async function getSandboxOptions() {
       fabric: versionsFor("fabric"),
       purpur: versionsFor("purpur"),
     },
-    ramChoices: [1, 2, 3, 4, 5, 6, 7, 8],
+    ramChoices: [1, 2, 3, 4, 5, 6, 7, 8, 16, 24],
     cpuChoices: [1, 2, 3, 4],
     difficulties: ["peaceful", "easy", "normal", "hard"],
     gamemodes: ["survival", "creative", "adventure", "spectator"],
     defaults: {
+      preset: DEFAULT_SANDBOX_PRESET,
+      ramGb: PRESETS[DEFAULT_SANDBOX_PRESET].ramGb,
+      cpuCores: PRESETS[DEFAULT_SANDBOX_PRESET].cpuCores,
       maxPlayers: 12,
       viewDistance: 8,
       simulationDistance: 6,
@@ -255,6 +278,11 @@ export function listSandboxes(scope: OwnerScope) {
   return visibleToOwner(loadStore(), scope).map((row) => publicSandbox(row));
 }
 
+/**
+ * Creates a new Crafty server named `sandbox-*` on the sandbox port range.
+ * Start, stop, and delete only accept ids stored for that owner. They never
+ * target production network servers.
+ */
 export async function createSandbox(input: SandboxCreateInput, scope: OwnerScope) {
   if (!scope?.ownerId) throw new Error("Missing sandbox owner.");
   const name = sanitizeName(input.name);
@@ -262,7 +290,7 @@ export async function createSandbox(input: SandboxCreateInput, scope: OwnerScope
   const version = String(input.version || "").trim();
   let ramGb = Number(input.ramGb);
   let cpuCores = Number(input.cpuCores);
-  let preset: SandboxPreset = input.preset || "custom";
+  let preset: SandboxPreset = input.preset || DEFAULT_SANDBOX_PRESET;
 
   if (preset !== "custom" && PRESETS[preset]) {
     ramGb = PRESETS[preset].ramGb;
