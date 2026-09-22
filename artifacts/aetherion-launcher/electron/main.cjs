@@ -1,5 +1,9 @@
 const path = require("node:path");
 const { app, BrowserWindow, ipcMain, shell } = require("electron");
+
+if (process.platform === "win32") {
+  app.setAppUserModelId("de.aetherion.launcher");
+}
 const { getSettings, saveSettings, loadManifest, paths } = require("./lib/paths.cjs");
 const { packStatus, syncMods, ensureFabricProfile, loadManifest: loadPack } = require("./lib/pack.cjs");
 const { loginMicrosoft, restoreSession, logout, peekAccount } = require("./lib/auth.cjs");
@@ -103,6 +107,14 @@ ipcMain.handle("settings:update", async (_e, patch) => {
   if (patch && Object.prototype.hasOwnProperty.call(patch, "autoJoin")) {
     nextPatch.autoJoin = Boolean(patch.autoJoin);
   }
+  if (patch && Object.prototype.hasOwnProperty.call(patch, "controlApiBase")) {
+    const raw = String(patch.controlApiBase || "").trim();
+    nextPatch.controlApiBase = raw ? control.normalizeBase(raw) : null;
+  }
+  if (patch && Object.prototype.hasOwnProperty.call(patch, "controlKey")) {
+    const raw = String(patch.controlKey || "").trim();
+    nextPatch.controlKey = raw || null;
+  }
   const next = saveSettings(nextPatch);
   return presentSettings(next, loadManifest());
 });
@@ -149,14 +161,18 @@ ipcMain.handle("game:play", async () => {
   return { ok: true };
 });
 
-ipcMain.handle("control:unlock", async (_e, input) => control.unlockControl(input || {}));
-ipcMain.handle("control:lock", async () => control.lockControl());
-ipcMain.handle("sandbox:options", async () => control.sandboxOptions());
-ipcMain.handle("sandbox:list", async () => control.sandboxList());
-ipcMain.handle("sandbox:create", async (_e, input) => control.sandboxCreate(input));
-ipcMain.handle("sandbox:start", async (_e, id) => control.sandboxStart(id));
-ipcMain.handle("sandbox:delete", async (_e, id) => control.sandboxDelete(id));
-ipcMain.handle("sandbox:upload", async (_e, input) => control.sandboxUpload(input || {}));
+function requirePlayer() {
+  const account = cachedAuth?.account || peekAccount();
+  if (!account?.id) throw new Error("Sign in with Microsoft before using sandboxes.");
+  return account.id;
+}
+
+ipcMain.handle("sandbox:options", async () => control.sandboxOptions(requirePlayer()));
+ipcMain.handle("sandbox:list", async () => control.sandboxList(requirePlayer()));
+ipcMain.handle("sandbox:create", async (_e, input) => control.sandboxCreate(requirePlayer(), input));
+ipcMain.handle("sandbox:start", async (_e, id) => control.sandboxStart(requirePlayer(), id));
+ipcMain.handle("sandbox:delete", async (_e, id) => control.sandboxDelete(requirePlayer(), id));
+ipcMain.handle("sandbox:upload", async (_e, input) => control.sandboxUpload(requirePlayer(), input || {}));
 
 ipcMain.handle("window:minimize", () => mainWindow?.minimize());
 ipcMain.handle("window:close", () => mainWindow?.close());

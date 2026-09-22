@@ -21,12 +21,28 @@ export type AccessSession = {
   createdAt: number;
 };
 
+export type LauncherServiceAccess = {
+  token: string;
+  name: string;
+  role: "operator";
+  permissions: string[];
+  code: "LAUNCHER_SERVICE";
+};
+
 declare global {
   namespace Express {
     interface Request {
-      access?: AccessSession | { token: string; name: string; role: "owner"; permissions: string[]; code: "CONTROL_API_KEY" };
+      access?:
+        | AccessSession
+        | { token: string; name: string; role: "owner"; permissions: string[]; code: "CONTROL_API_KEY" }
+        | LauncherServiceAccess;
     }
   }
+}
+
+/** Friend-tier key baked into the desktop launcher. Sandbox permission only. */
+export function launcherServiceKey() {
+  return process.env.LAUNCHER_SERVICE_KEY?.trim() || "aetherion-launcher-friend-v1";
 }
 
 const ROLE_PERMISSIONS: Record<AccessRole, string[]> = {
@@ -179,7 +195,8 @@ export function hasPermission(
 }
 
 /**
- * Accepts CONTROL_API_KEY (owner) or an access-code session token.
+ * Accepts CONTROL_API_KEY (owner), the launcher friend key (sandbox only),
+ * or an access-code session token.
  */
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
   const master = process.env.CONTROL_API_KEY?.trim();
@@ -203,6 +220,19 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
       name: "Owner",
       role: "owner",
       permissions: ["*"],
+    };
+    next();
+    return;
+  }
+
+  const launcherKey = launcherServiceKey();
+  if (launcherKey && safeEqual(provided, launcherKey)) {
+    req.access = {
+      token: provided,
+      code: "LAUNCHER_SERVICE",
+      name: "Launcher",
+      role: "operator",
+      permissions: ["sandbox"],
     };
     next();
     return;

@@ -1,6 +1,22 @@
 const fs = require("node:fs");
+const path = require("node:path");
+const { BrowserWindow } = require("electron");
 const { Auth } = require("msmc");
 const { paths, readJson, writeJson } = require("./paths.cjs");
+
+function loginWindowOptions() {
+  const parent = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows().find((win) => !win.isDestroyed());
+  return {
+    width: 520,
+    height: 700,
+    title: "Sign in — AETHERION",
+    backgroundColor: "#0B0E12",
+    parent: parent || undefined,
+    modal: Boolean(parent),
+    skipTaskbar: true,
+    icon: path.join(__dirname, "..", "..", "assets", "icon.png"),
+  };
+}
 
 function publicAccount(profile) {
   if (!profile?.name) return null;
@@ -71,12 +87,7 @@ async function restoreSession() {
 
 async function loginMicrosoft() {
   const auth = new Auth("select_account");
-  const xbox = await auth.launch("electron", {
-    width: 520,
-    height: 700,
-    title: "Sign in — AETHERION",
-    backgroundColor: "#0B0E12",
-  });
+  const xbox = await auth.launch("electron", loginWindowOptions());
   const token = await xbox.getMinecraft();
 
   writeJson(paths().account, {

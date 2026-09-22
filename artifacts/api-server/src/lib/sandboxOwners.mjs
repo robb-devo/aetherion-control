@@ -1,13 +1,44 @@
 import { createHash } from "node:crypto";
 
 /**
- * Stable owner key for a sandbox. Derived from the access-code identity
- * (or CONTROL_API_KEY), not the rotating session token.
+ * Stable owner key for a sandbox. Derived from the access-code identity,
+ * CONTROL_API_KEY, or a Microsoft player id (`ms:<uuid>`), not the rotating
+ * session token.
  */
 export function ownerIdFor(code) {
   const identity = String(code || "").trim();
   if (!identity) throw new Error("Missing sandbox owner.");
   return createHash("sha256").update(`aetherion.sandbox.owner.v1:${identity}`).digest("hex");
+}
+
+/** 32-char Minecraft/Microsoft UUID, dashed or not. Empty input is null. */
+export function normalizePlayerId(raw) {
+  const id = String(raw || "").trim().toLowerCase().replace(/-/g, "");
+  if (!id) return null;
+  if (!/^[0-9a-f]{32}$/.test(id)) throw new Error("Invalid player id.");
+  return id;
+}
+
+/**
+ * Who a sandbox call is allowed to see.
+ * Access-code sessions ignore playerId so an operator cannot spoof another owner.
+ * The launcher service key and a master key sent with a player header are scoped
+ * to that Microsoft identity and never include legacy unowned rows.
+ */
+export function scopeForAccess({ code, role, playerId }) {
+  const identity = String(code || "").trim();
+  if (!identity) throw new Error("Unauthorized");
+  if (identity === "LAUNCHER_SERVICE") {
+    if (!playerId) throw new Error("Sign in with Microsoft before using sandboxes.");
+    return { ownerId: ownerIdFor(`ms:${playerId}`), includeUnowned: false };
+  }
+  if (identity === "CONTROL_API_KEY" && playerId) {
+    return { ownerId: ownerIdFor(`ms:${playerId}`), includeUnowned: false };
+  }
+  return {
+    ownerId: ownerIdFor(identity),
+    includeUnowned: role === "owner",
+  };
 }
 
 export function canSeeSandbox(row, scope) {

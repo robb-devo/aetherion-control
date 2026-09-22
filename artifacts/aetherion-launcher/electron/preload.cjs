@@ -12,8 +12,6 @@ contextBridge.exposeInMainWorld("aetherion", {
   close: () => ipcRenderer.invoke("window:close"),
   updateStatus: () => ipcRenderer.invoke("update:status"),
   startUpdate: () => ipcRenderer.invoke("update:start"),
-  unlockControl: (input) => ipcRenderer.invoke("control:unlock", input),
-  lockControl: () => ipcRenderer.invoke("control:lock"),
   sandboxOptions: () => ipcRenderer.invoke("sandbox:options"),
   sandboxList: () => ipcRenderer.invoke("sandbox:list"),
   sandboxCreate: (input) => ipcRenderer.invoke("sandbox:create", input),
@@ -34,6 +32,11 @@ contextBridge.exposeInMainWorld("aetherion", {
     const listener = (_event, payload) => handler(payload);
     ipcRenderer.on("launch:close", listener);
     return () => ipcRenderer.removeListener("launch:close", listener);
+  },
+  onRunning: (handler) => {
+    const listener = (_event, payload) => handler(payload);
+    ipcRenderer.on("launch:running", listener);
+    return () => ipcRenderer.removeListener("launch:running", listener);
   },
   onUpdate: (handler) => {
     const listener = (_event, payload) => handler(payload);

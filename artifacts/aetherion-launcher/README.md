@@ -2,7 +2,7 @@
 
 Windows desktop launcher for the AETHERION Fabric client. Sign in with Microsoft, install the pack from `pack/manifest.json`, and play. The installer can update itself from GitHub Releases.
 
-Version **1.3.0** keeps the 1.2.2 launch, auth, and pack behavior.
+Version **1.3.1** keeps the 1.2.2 launch, auth, and pack behavior.
 
 ## Develop
 
@@ -30,9 +30,13 @@ The address on that entry is the network server (`play.donnernet.de` unless `ser
 
 ## Your own Server
 
-This uses the existing control API sandbox pool (`/api/sandbox`), the same access-code auth as the mobile app (`Authorization: Bearer <token>` from `POST /api/auth/unlock`). Default API base: `http://135.181.18.162:5055`.
+Servers uses the existing control API sandbox pool (`/api/sandbox`). After Microsoft sign-in the launcher calls that API with a baked friend-tier key (`Authorization: Bearer`) and sends the Minecraft UUID in `X-Aetherion-Player`. The API scopes list, create, start, delete, and upload to that identity. There is no access-code field in the launcher.
 
-The list is private to the signed-in access code. Pool RAM and CPU limits are unchanged. Text upload (256 KB, no jars) goes to `POST /api/sandbox/servers/:id/files`. Play on a row sets the launch target to that `address:port` and starts the client.
+Default API base: `http://135.181.18.162:5055`. Settings → Advanced can override the base URL and the service key for the owner. A blank key keeps the built-in credential. The key is not shown in the UI.
+
+Pool RAM and CPU limits are unchanged. Text upload (256 KB, no jars) goes to `POST /api/sandbox/servers/:id/files`. Play on a row sets the launch target to that `address:port` and starts the client. The AETHERION network entry in `servers.dat` stays in place.
+
+The friend key only has the `sandbox` permission. Mobile access-code sessions ignore `X-Aetherion-Player`, so an operator code cannot list someone else’s sandboxes by spoofing the header. Set `LAUNCHER_SERVICE_KEY` on the API to rotate the baked key, and `AETHERION_CONTROL_KEY` / `AETHERION_API_BASE` on a launcher machine to override it without the Settings screen.
 
 ## Build a Windows installer
 
@@ -66,12 +70,12 @@ The newest matching version newer than the running app shows an **Update** contr
 `latest.yml` shape:
 
 ```yaml
-version: 1.3.0
+version: 1.3.1
 files:
-  - url: AETHERION-Launcher-1.3.0.exe
+  - url: AETHERION-Launcher-1.3.1.exe
     sha512: "<base64 sha512 of the exe>"
     size: 123456789
-path: AETHERION-Launcher-1.3.0.exe
+path: AETHERION-Launcher-1.3.1.exe
 sha512: "<same sha512>"
 releaseDate: "2026-09-22T00:00:00.000Z"
 ```
@@ -85,7 +89,7 @@ so it does not depend on which repo release is marked Latest.
 ### Publish
 
 1. Set `version` in `artifacts/aetherion-launcher/package.json`.
-2. Tag `launcher-v` plus that version, for example `launcher-v1.3.0`, and push the tag.
+2. Tag `launcher-v` plus that version, for example `launcher-v1.3.1`, and push the tag.
 3. Confirm the release has the exe and `latest.yml` named exactly as above.
 4. An older installed build then offers Update.
 

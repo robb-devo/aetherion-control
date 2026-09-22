@@ -149,6 +149,7 @@ async function prepareAndLaunch({ authorization, send }) {
   }
 
   activeProcess = await client.launch(opts);
+  send?.("launch:running", { ok: true });
   return { ok: true };
 }
 

@@ -31,14 +31,13 @@ export type Settings = {
   autoJoin: boolean;
   serverAddress: string;
   playTarget: PlayTarget;
+  controlApiBase: string;
+  controlKeySet: boolean;
+  apiBase: string;
 };
 
-export type ControlSession = {
+export type ControlInfo = {
   apiBase: string;
-  unlocked: boolean;
-  displayName: string | null;
-  role: string | null;
-  canSandbox: boolean;
 };
 
 export type UpdateStatus = {
@@ -52,7 +51,7 @@ export type AppState = {
   settings: Settings;
   pack: PackStatus;
   appVersion: string;
-  control: ControlSession;
+  control: ControlInfo;
   update: UpdateStatus;
 };
 
@@ -84,6 +83,19 @@ export type SandboxOptions = {
   }>;
   serverTypes: Array<{ value: string; label: string; blurb: string }>;
   versions: Record<string, string[]>;
+  ramChoices: number[];
+  cpuChoices: number[];
+  difficulties: string[];
+  gamemodes: string[];
+  defaults: {
+    maxPlayers: number;
+    viewDistance: number;
+    simulationDistance: number;
+    difficulty: string;
+    gamemode: string;
+    onlineMode: boolean;
+    motd: string;
+  };
 };
 
 export type SandboxServer = {
@@ -96,6 +108,8 @@ export type SandboxServer = {
   preset: string;
   port: number;
   address: string;
+  maxPlayers?: number;
+  onlineMode?: boolean;
 };
 
 export type SandboxCreateInput = {
@@ -105,6 +119,13 @@ export type SandboxCreateInput = {
   ramGb: number;
   cpuCores: number;
   preset: string;
+  maxPlayers: number;
+  viewDistance: number;
+  simulationDistance: number;
+  difficulty: string;
+  gamemode: string;
+  onlineMode: boolean;
+  motd: string;
   startAfterCreate: boolean;
 };
 
@@ -112,7 +133,9 @@ declare global {
   interface Window {
     aetherion: {
       getState: () => Promise<AppState>;
-      updateSettings: (patch: Partial<Pick<Settings, "ramGb" | "autoJoin">>) => Promise<Settings>;
+      updateSettings: (
+        patch: Partial<Pick<Settings, "ramGb" | "autoJoin" | "controlApiBase">> & { controlKey?: string },
+      ) => Promise<Settings>;
       setPlayTarget: (
         target:
           | { kind: "network" }
@@ -126,8 +149,6 @@ declare global {
       close: () => Promise<void>;
       updateStatus: () => Promise<UpdateStatus>;
       startUpdate: () => Promise<UpdateStatus>;
-      unlockControl: (input: { code: string; apiBase?: string }) => Promise<ControlSession>;
-      lockControl: () => Promise<ControlSession>;
       sandboxOptions: () => Promise<SandboxOptions>;
       sandboxList: () => Promise<{ servers: SandboxServer[] }>;
       sandboxCreate: (input: SandboxCreateInput) => Promise<SandboxServer>;
@@ -137,6 +158,7 @@ declare global {
       onProgress: (handler: (evt: ProgressEvent) => void) => () => void;
       onLog: (handler: (evt: { level: string; message: string }) => void) => () => void;
       onClose: (handler: (evt: { code: number }) => void) => () => void;
+      onRunning: (handler: (evt: { ok: boolean }) => void) => () => void;
       onUpdate: (handler: (evt: UpdateStatus) => void) => () => void;
     };
   }

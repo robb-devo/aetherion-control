@@ -1,6 +1,6 @@
 import { Router, type IRouter, type Response } from "express";
 import { requireAuth, requirePermission } from "../middlewares/requireAuth";
-import { ownerIdFor, type OwnerScope } from "../lib/sandboxOwners.mjs";
+import { normalizePlayerId, scopeForAccess, type OwnerScope } from "../lib/sandboxOwners.mjs";
 import {
   createSandbox,
   deleteSandbox,
@@ -21,15 +21,20 @@ router.use("/sandbox", requireAuth);
 function scopeFrom(req: Express.Request): OwnerScope {
   const code = req.access?.code;
   if (!code) throw new Error("Unauthorized");
-  return {
-    ownerId: ownerIdFor(code),
-    includeUnowned: req.access?.role === "owner",
-  };
+  const header = req.header("x-aetherion-player");
+  const hasHeader = header != null && String(header).trim() !== "";
+  const forwardPlayer = code === "LAUNCHER_SERVICE" || (code === "CONTROL_API_KEY" && hasHeader);
+  const playerId = forwardPlayer ? normalizePlayerId(header) : null;
+  return scopeForAccess({
+    code,
+    role: req.access?.role,
+    playerId,
+  });
 }
 
 function fail(res: Response, error: unknown, fallback: string) {
   const message = error instanceof Error ? error.message : fallback;
-  const status = /unauthorized/i.test(message)
+  const status = /unauthorized|sign in/i.test(message)
     ? 401
     : /not found/i.test(message)
       ? 404

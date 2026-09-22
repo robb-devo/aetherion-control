@@ -1,5 +1,6 @@
 const path = require("node:path");
 const { ensureServerEntries, normalizeIp } = require("./servers.cjs");
+const { DEFAULT_API_BASE, normalizeBase } = require("./control.cjs");
 
 function networkServer(manifest, settings) {
   const server = manifest?.server || {};
@@ -29,6 +30,15 @@ function activeTarget(manifest, settings) {
 function presentSettings(settings, manifest) {
   const network = networkServer(manifest, settings);
   const play = activeTarget(manifest, settings);
+  const override = settings?.controlApiBase ? String(settings.controlApiBase).trim() : "";
+  let apiBase = DEFAULT_API_BASE;
+  if (override) {
+    try {
+      apiBase = normalizeBase(override);
+    } catch {
+      apiBase = override;
+    }
+  }
   return {
     ramGb: settings.ramGb,
     autoJoin: settings.autoJoin !== false,
@@ -40,6 +50,9 @@ function presentSettings(settings, manifest) {
       port: play.port,
       label: normalizeIp(play.address, play.port),
     },
+    controlApiBase: override,
+    controlKeySet: Boolean(settings?.controlKey && String(settings.controlKey).trim()),
+    apiBase,
   };
 }
 

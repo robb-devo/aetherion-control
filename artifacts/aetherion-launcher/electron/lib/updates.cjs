@@ -110,8 +110,10 @@ function createUpdaterWindow() {
     frame: false,
     show: false,
     alwaysOnTop: true,
+    skipTaskbar: true,
     backgroundColor: "#100e16",
     title: "Updating AETHERION",
+    icon: path.join(__dirname, "..", "..", "assets", "icon.png"),
     webPreferences: {
       preload: path.join(__dirname, "..", "updater-preload.cjs"),
       contextIsolation: true,
