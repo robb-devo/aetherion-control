@@ -7,6 +7,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useColors } from '@/hooks/useColors';
 import { useServerControl } from '@/context/ServerContext';
 import { MetricBar, SectionTitle, StatusDot, uiStyles } from '@/components/ControlUI';
+import { SandboxButton } from '@/components/SandboxButton';
 
 export default function OverviewScreen() {
   const colors = useColors();
@@ -22,12 +23,12 @@ export default function OverviewScreen() {
     <View style={[uiStyles.screen, { backgroundColor: colors.background }]}>
       <ScrollView refreshControl={<RefreshControl refreshing={isLoading} onRefresh={() => void refresh()} tintColor={colors.primary} colors={[colors.primary]} />} contentContainerStyle={[uiStyles.scroll, { paddingTop: insets.top + 16 }]}>
         <View style={styles.header}>
-          <View>
+          <View style={styles.headerCopy}>
             <Text style={[styles.kicker, { color: colors.primary }]}>AETHERION</Text>
             <Text style={[styles.title, { color: colors.foreground }]}>Command center</Text>
             <Text style={[styles.subtitle, { color: colors.mutedForeground }]}>Dein Netzwerk auf einen Blick.</Text>
           </View>
-          <View style={[styles.avatar, { backgroundColor: colors.accent, borderColor: colors.border }]}><Text style={[styles.avatarText, { color: colors.accentForeground }]}>MC</Text></View>
+          <SandboxButton />
         </View>
 
         <LinearGradient colors={['#2C1747', '#11101B']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.hero}>
@@ -87,12 +88,11 @@ function Activity({ icon, title, meta, time, color }: { icon: keyof typeof Feath
 }
 
 const styles = StyleSheet.create({
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 22 },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 22 },
+  headerCopy: { flex: 1 },
   kicker: { fontFamily: 'Inter_700Bold', fontSize: 10, letterSpacing: 2.1, marginBottom: 7 },
   title: { fontFamily: 'Inter_700Bold', fontSize: 30, letterSpacing: -1.1 },
   subtitle: { fontFamily: 'Inter_400Regular', fontSize: 14, marginTop: 5 },
-  avatar: { width: 44, height: 44, borderRadius: 16, alignItems: 'center', justifyContent: 'center', borderWidth: 1 },
-  avatarText: { fontFamily: 'Inter_700Bold', fontSize: 12, letterSpacing: 0.5 },
   hero: { borderRadius: 24, padding: 19, minHeight: 190 },
   heroTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   livePill: { flexDirection: 'row', gap: 7, alignItems: 'center', backgroundColor: 'rgba(143,240,214,0.12)', borderRadius: 8, paddingHorizontal: 9, paddingVertical: 7 },
