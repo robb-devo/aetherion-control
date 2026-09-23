@@ -4,6 +4,7 @@ import React from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { PrimaryButton, SectionTitle, uiStyles } from '@/components/ControlUI';
+import { SandboxButton } from '@/components/SandboxButton';
 import { useControlAuth } from '@/context/ControlAuth';
 import { useServerControl } from '@/context/ServerContext';
 import { useColors } from '@/hooks/useColors';
@@ -33,16 +34,14 @@ export default function ToolsScreen() {
     <View style={[uiStyles.screen, { backgroundColor: colors.background }]}>
       <ScrollView contentContainerStyle={[uiStyles.scroll, { paddingTop: insets.top + 16 }]}>
         <View style={styles.header}>
-          <View>
+          <View style={styles.headerCopy}>
             <Text style={[styles.kicker, { color: colors.primary }]}>SESSION</Text>
             <Text style={[styles.title, { color: colors.foreground }]}>Control</Text>
             <Text style={[styles.subtitle, { color: colors.mutedForeground }]}>
               Direkte Verbindung zu Crafty über deine private Control-API.
             </Text>
           </View>
-          <View style={[styles.toolboxIcon, { backgroundColor: colors.accent }]}>
-            <Feather name="settings" size={20} color={colors.primary} />
-          </View>
+          <SandboxButton />
         </View>
 
         <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
@@ -84,11 +83,11 @@ function Row({ label, value, colors }: { label: string; value: string; colors: R
 }
 
 const styles = StyleSheet.create({
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 20 },
+  headerCopy: { flex: 1 },
   kicker: { fontFamily: 'Inter_700Bold', fontSize: 10, letterSpacing: 2, marginBottom: 7 },
   title: { fontFamily: 'Inter_700Bold', fontSize: 30, letterSpacing: -1 },
   subtitle: { fontFamily: 'Inter_400Regular', fontSize: 14, marginTop: 5, maxWidth: 260 },
-  toolboxIcon: { width: 44, height: 44, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
   card: { borderWidth: 1, borderRadius: 18, padding: 14, gap: 12 },
   row: { gap: 4 },
   rowLabel: { fontFamily: 'Inter_500Medium', fontSize: 11 },
