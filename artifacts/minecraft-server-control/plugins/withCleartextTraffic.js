@@ -3,6 +3,12 @@ const fs = require("fs");
 const path = require("path");
 
 function withCleartext(config) {
+  // Sideloaded updates hand the APK to the system installer. Android still
+  // requires the user to confirm that screen; this permission only lets the
+  // app request it.
+  config = AndroidConfig.Permissions.withPermissions(config, [
+    'android.permission.REQUEST_INSTALL_PACKAGES',
+  ]);
   config = withAndroidManifest(config, (cfg) => {
     const app = AndroidConfig.Manifest.getMainApplicationOrThrow(cfg.modResults);
     app.$["android:usesCleartextTraffic"] = "true";

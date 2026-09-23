@@ -3,6 +3,7 @@ import { useRouter } from 'expo-router';
 import React from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { AppUpdateCard } from '@/components/AppUpdateCard';
 import { PrimaryButton, SectionTitle, uiStyles } from '@/components/ControlUI';
 import { useControlAuth } from '@/context/ControlAuth';
 import { useServerControl } from '@/context/ServerContext';
@@ -49,8 +50,10 @@ export default function ToolsScreen() {
           <Row label="API" value={apiBase || '—'} colors={colors} />
           <Row label="Nodes" value={`${online}/${servers.length} online`} colors={colors} />
           <Row label="Status" value={error ? 'Fehler' : 'Verbunden'} colors={colors} />
-          {lastAction ? <Row label="Last action" value={lastAction} colors={colors} /> : null}
+          {lastAction ? <Row label="Last action" value={lastAction.text} colors={colors} /> : null}
         </View>
+
+        <AppUpdateCard />
 
         <SectionTitle title="Actions" eyebrow="DEVICE" />
         <View style={styles.actions}>
