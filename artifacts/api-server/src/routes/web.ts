@@ -1,6 +1,7 @@
 import cookieParser from "cookie-parser";
 import { Router, type IRouter, type NextFunction, type Request, type Response } from "express";
 import { SandboxError } from "../lib/sandbox";
+import { installAddon, listAddons, removeAddon } from "../lib/webAddons";
 import {
   AccountError,
   RateLimiter,
@@ -249,6 +250,26 @@ for (const [action, run] of Object.entries(lifecycle)) {
     handle(async (req, res) => run(String(req.params.id), scopeForWebUser(currentUser(res)))),
   );
 }
+
+router.get(
+  "/web/servers/:id/addons",
+  requireUser,
+  handle(async (req, res) => listAddons(String(req.params.id), scopeForWebUser(currentUser(res)))),
+);
+
+router.post(
+  "/web/servers/:id/addons",
+  requireUser,
+  throttleActions,
+  handle(async (req, res) => installAddon(String(req.params.id), scopeForWebUser(currentUser(res)), req.body?.versionId), 201),
+);
+
+router.delete(
+  "/web/servers/:id/addons/:file",
+  requireUser,
+  throttleActions,
+  handle(async (req, res) => removeAddon(String(req.params.id), scopeForWebUser(currentUser(res)), req.params.file)),
+);
 
 router.get(
   "/web/servers/:id/console",

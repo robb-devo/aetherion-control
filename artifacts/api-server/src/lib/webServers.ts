@@ -64,15 +64,15 @@ export function tierFor(ramMb: number) {
   return RAM_TIERS.find((tier) => tier.ramMb === ramMb);
 }
 
-/** Release builds the host's Java can run: 1.21.x and the 26.x line. No snapshots or release candidates. */
+/** Release builds the host's Java 25 runs well: 1.20 and newer. No snapshots or release candidates. */
 export function playableVersions(versions: string[]) {
   return versions
     .filter((version) => /^\d+\.\d+(\.\d+)?$/.test(version))
     .filter((version) => {
       const [major, minor] = version.split(".").map(Number);
-      return major >= 26 || (major === 1 && minor >= 21);
+      return major >= 26 || (major === 1 && minor >= 20);
     })
-    .slice(0, 15);
+    .slice(0, 40);
 }
 
 export function cleanServerName(raw: unknown) {

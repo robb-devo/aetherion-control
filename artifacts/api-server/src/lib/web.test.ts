@@ -26,6 +26,7 @@ import {
   tierFor,
 } from "./webServers";
 import webRouter from "../routes/web";
+import { addonSupport } from "./webAddons";
 
 async function withTempData<T>(run: (dir: string) => Promise<T>) {
   const dir = await mkdtemp(path.join(tmpdir(), "aeth-web-"));
@@ -104,6 +105,13 @@ test("JVM flags keep launcher GB servers unchanged and support MB tiers", () => 
   assert.match(buildJavaCommand("paper.jar", 1536, 2), /-Xms1G -Xmx1536M /);
 });
 
+test("plugins go to Paper/Purpur, mods to Fabric, nothing to Vanilla", () => {
+  assert.equal(addonSupport("vanilla"), null);
+  assert.equal(addonSupport("paper")?.folder, "plugins");
+  assert.equal(addonSupport("purpur")?.kind, "plugin");
+  assert.deepEqual(addonSupport("fabric"), { kind: "mod", folder: "mods", loaders: ["fabric"] });
+});
+
 test("console lines come back as plain text", () => {
   assert.equal(
     cleanLogLine("\u001b[33m[18:44 INFO]: It&#x27;s &quot;fine&quot; &lt;3 &amp; more\r"),
@@ -113,8 +121,8 @@ test("console lines come back as plain text", () => {
 
 test("only playable release versions are offered", () => {
   assert.deepEqual(
-    playableVersions(["26.3", "26.3-rc-3", "1.21.11", "1.21.11-rc3", "1.20.6", "25w14a", "1.8.9"]),
-    ["26.3", "1.21.11"],
+    playableVersions(["26.3", "26.3-rc-3", "1.21.11", "1.21.11-rc3", "1.21.1", "1.20.6", "25w14a", "1.19.4", "1.8.9"]),
+    ["26.3", "1.21.11", "1.21.1", "1.20.6"],
   );
 });
 
