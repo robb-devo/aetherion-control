@@ -50,6 +50,11 @@ export type CraftyStats = {
   startedAt: string | null;
   uptime: string;
   updatedAt: string;
+  pingable: boolean;
+  crashed: boolean;
+  /** Crafty is still downloading or importing the server jar. */
+  importing: boolean;
+  updating: boolean;
 };
 
 export type CraftyFileEntry = {
@@ -71,8 +76,14 @@ const craftyTlsAgent = new Agent({
   },
 });
 
+const CRAFTY_TIMEOUT_MS = 30_000;
+
 function fetchCrafty(path: string, init: RequestInit = {}) {
-  return undiciFetch(`${baseUrl()}${path}`, { ...init, dispatcher: craftyTlsAgent });
+  return undiciFetch(`${baseUrl()}${path}`, {
+    ...init,
+    signal: init.signal ?? AbortSignal.timeout(CRAFTY_TIMEOUT_MS),
+    dispatcher: craftyTlsAgent,
+  });
 }
 
 function baseUrl() {
@@ -263,6 +274,10 @@ export async function getCraftyStats(id: string) {
     server_port?: number;
     world_size?: string;
     started?: string;
+    int_ping_results?: string | boolean;
+    crashed?: boolean;
+    importing?: boolean;
+    updating?: boolean;
   }>(`/api/v2/servers/${encodeURIComponent(id)}/stats`);
   let players: string[] = [];
   if (Array.isArray(data.players)) players = data.players.filter((player): player is string => typeof player === "string");
@@ -291,6 +306,10 @@ export async function getCraftyStats(id: string) {
     startedAt: typeof data.started === "string" ? data.started : null,
     uptime: data.running ? formatUptime(data.started) : "Offline",
     updatedAt: new Date().toISOString(),
+    pingable: data.int_ping_results === true || String(data.int_ping_results).toLowerCase() === "true",
+    crashed: Boolean(data.crashed),
+    importing: Boolean(data.importing),
+    updating: Boolean(data.updating),
   } satisfies CraftyStats;
 }
 
@@ -304,9 +323,12 @@ export async function runCraftyAction(id: string, action: string) {
 }
 
 export async function sendCraftyCommand(id: string, command: string) {
+  // Crafty /stdin expects the raw console command as text/plain — NOT JSON.
+  // Sending {"command":"..."} makes Minecraft try to execute the JSON literal.
   return craftyRequest(`/api/v2/servers/${encodeURIComponent(id)}/stdin`, {
     method: "POST",
-    body: JSON.stringify({ command }),
+    headers: { "content-type": "text/plain; charset=utf-8" },
+    body: command,
   });
 }
 

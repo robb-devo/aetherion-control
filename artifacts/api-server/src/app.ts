@@ -6,6 +6,9 @@ import { logger } from "./lib/logger";
 
 const app: Express = express();
 
+// The website reaches /api/web through nginx on the same host; rate limits need the client IP.
+app.set("trust proxy", "loopback");
+
 app.use(
   pinoHttp({
     logger,

@@ -9,7 +9,8 @@
     "start": "node --enable-source-maps ./dist/index.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:crafty": "node ./scripts/run-crafty-tests.mjs",
-    "test:launcher-auth": "node ./scripts/run-launcher-auth-tests.mjs && node --test src/lib/bearerAuth.test.mjs src/lib/sandboxOwners.test.mjs"
+    "test:launcher-auth": "node ./scripts/run-launcher-auth-tests.mjs && node --test src/lib/bearerAuth.test.mjs src/lib/sandboxOwners.test.mjs",
+    "test:web": "node ./scripts/run-web-tests.mjs"
   },
   "dependencies": {
     "@clerk/express": "^2.1.69",
