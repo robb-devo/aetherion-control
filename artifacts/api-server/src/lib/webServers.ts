@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { nodeFor } from "./nodes";
+import { HOMELAB_NODE_ID, listNodes, nodeFor } from "./nodes";
 import { pingMinecraft, type ServerPing } from "./serverProbe";
 import type { OwnerScope } from "./sandboxOwners.mjs";
 import {
@@ -50,6 +50,8 @@ export function idleStopMinutes() {
  * simulation distance scale with the tier so small servers stay playable.
  */
 export const RAM_TIERS = [
+  /** Homage to “Can it run Crysis?” — 128 MB heap + one JVM thread. */
+  { ramMb: 128, cpuCores: 1, rarity: "crysis", viewDistance: 2, simulationDistance: 2, maxPlayers: 1 },
   { ramMb: 512, cpuCores: 1, rarity: "common", viewDistance: 5, simulationDistance: 4, maxPlayers: 4 },
   { ramMb: 768, cpuCores: 1, rarity: "uncommon", viewDistance: 6, simulationDistance: 4, maxPlayers: 6 },
   { ramMb: 1024, cpuCores: 1, rarity: "rare", viewDistance: 7, simulationDistance: 5, maxPlayers: 8 },
@@ -121,6 +123,8 @@ export function deriveStatus(input: {
   job?: Pick<Job, "phase">;
   running: boolean;
   pingable: boolean;
+  /** When the control host cannot Minecraft-ping the node (HomeLab), Crafty "running" is enough. */
+  trustRunning?: boolean;
   pending?: Pick<Pending, "action">;
 }): WebStatus {
   if (input.job?.phase === "preparing") return "preparing";
@@ -129,7 +133,8 @@ export function deriveStatus(input: {
   if (input.running) {
     if (action === "stop") return "stopping";
     if (action === "restart") return "restarting";
-    return input.pingable ? "online" : "starting";
+    if (input.pingable || input.trustRunning) return "online";
+    return "starting";
   }
   if (action === "start") return "starting";
   if (action === "restart") return "restarting";
@@ -141,7 +146,7 @@ function setNotice(id: string, code: string, message: string) {
 }
 
 /** Moves pending actions forward from what the probe sees right now. */
-function observe(id: string, running: boolean, pingable: boolean) {
+function observe(id: string, running: boolean, pingable: boolean, trustRunning: boolean) {
   const entry = pending.get(id);
   if (!entry) return;
   const age = Date.now() - entry.at;
@@ -150,7 +155,7 @@ function observe(id: string, running: boolean, pingable: boolean) {
     return;
   }
   if (entry.action === "start") {
-    if (pingable) pending.delete(id);
+    if (pingable || (trustRunning && running && age > 8_000)) pending.delete(id);
     else if (running) entry.seenRunning = true;
     else if (entry.seenRunning || age > START_NO_PROCESS_MS) {
       pending.delete(id);
@@ -159,30 +164,66 @@ function observe(id: string, running: boolean, pingable: boolean) {
   } else if (entry.action === "stop") {
     if (!running) pending.delete(id);
   } else if (entry.action === "restart") {
-    if (running && pingable && age > 8_000) pending.delete(id);
+    if (running && (pingable || trustRunning) && age > 8_000) pending.delete(id);
   }
 }
 
 async function pingSandbox(row: SandboxRecord): Promise<ServerPing | null> {
-  return pingMinecraft("127.0.0.1", row.port, 1200);
+  const node = nodeFor(row.nodeId);
+  // Local Crafty: probe loopback. Remote HomeLab: probe the node's advertised host
+  // (Tailscale / LAN). Failure is fine — we still trust Crafty stats for status.
+  const host = node.id === HOMELAB_NODE_ID ? node.publicHost || node.publicIp : "127.0.0.1";
+  return pingMinecraft(host, row.port, 1500);
+}
+
+/** Scale Crafty's host-wide CPU % onto the cores we handed this JVM. */
+export function cpuOfAllocated(hostPercent: number, cpuCores: number, poolCores: number) {
+  if (!Number.isFinite(hostPercent) || cpuCores < 1 || poolCores < 1) return null;
+  return Math.min(999, Math.round(((hostPercent * poolCores) / cpuCores) * 10) / 10);
+}
+
+function memoryMbFromCrafty(mem: string | undefined) {
+  if (!mem || mem === "—") return null;
+  const match = mem.trim().match(/^([\d.]+)\s*(B|KB|MB|GB|TB)?$/i);
+  if (!match) return null;
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const bytes = Number(match[1]) * 1024 ** Math.max(0, units.indexOf((match[2] ?? "B").toUpperCase()));
+  if (!Number.isFinite(bytes)) return null;
+  return Math.max(0, Math.round(bytes / 1024 / 1024));
 }
 
 export type WebServerView = Awaited<ReturnType<typeof toView>>;
 
 async function toView(row: SandboxRecord, detail = false) {
   const node = nodeFor(row.nodeId);
+  const trustRunning = node.id === HOMELAB_NODE_ID;
   const job = jobs.get(row.id);
   const probe = job?.phase === "preparing" ? { running: false, process: undefined } : await sandboxProcess(row);
   const ping = probe.running ? await pingSandbox(row) : null;
-  observe(row.id, probe.running, Boolean(ping));
-  const status = deriveStatus({ job, running: probe.running, pingable: Boolean(ping), pending: pending.get(row.id) });
+  observe(row.id, probe.running, Boolean(ping), trustRunning);
+  const status = deriveStatus({
+    job,
+    running: probe.running,
+    pingable: Boolean(ping),
+    trustRunning,
+    pending: pending.get(row.id),
+  });
 
   let cpuPercent: number | null = null;
-  if (detail && probe.running) {
+  let cpuHostPercent: number | null = null;
+  let memoryMb: number | null = probe.process?.rssMb ?? null;
+  let playersFromCrafty: { online: number; max: number; names: string[] } | null = null;
+  if (probe.running && (detail || trustRunning)) {
     try {
-      cpuPercent = (await cachedStats(row.id)).cpu;
+      const stats = await cachedStats(row.id);
+      cpuHostPercent = stats.cpu;
+      cpuPercent = cpuOfAllocated(stats.cpu, row.cpuCores || 1, node.poolCores);
+      if (memoryMb == null) memoryMb = memoryMbFromCrafty(stats.memory);
+      if (!ping && (stats.online > 0 || stats.maxPlayers > 0)) {
+        playersFromCrafty = { online: stats.online, max: stats.maxPlayers, names: stats.players };
+      }
     } catch {
-      cpuPercent = null;
+      // keep nulls
     }
   }
 
@@ -190,6 +231,9 @@ async function toView(row: SandboxRecord, detail = false) {
   const idleStart = idleSince.get(row.id);
   const notice = notices.get(row.id) ?? null;
   const ramMb = recordRamMb(row);
+  const players = ping
+    ? { online: ping.online, max: ping.max, names: ping.players }
+    : playersFromCrafty;
 
   return {
     id: row.id,
@@ -210,9 +254,17 @@ async function toView(row: SandboxRecord, detail = false) {
       maxPlayers: row.maxPlayers,
     },
     status,
-    players: ping ? { online: ping.online, max: ping.max, names: ping.players } : null,
+    players,
     startedAt: probe.running ? (probe.process?.startedAt ?? null) : null,
-    usage: detail && probe.running ? { memoryMb: probe.process?.rssMb ?? null, cpuPercent } : null,
+    usage:
+      detail && probe.running
+        ? {
+            memoryMb,
+            cpuPercent,
+            cpuHostPercent,
+            cpuCores: row.cpuCores || 1,
+          }
+        : null,
     idleStopAt:
       status === "online" && idleMinutes && idleStart ? new Date(idleStart + idleMinutes * 60_000).toISOString() : null,
     notice,
@@ -232,6 +284,12 @@ export async function webOptions() {
     maxRunning: MAX_RUNNING_PER_USER,
     idleStopMinutes: idleStopMinutes(),
     pool: { freeMb: pool.freeMb, poolMb: pool.poolMb },
+    nodes: listNodes().map((node) => ({
+      id: node.id,
+      name: node.name,
+      provider: node.provider,
+      available: node.available,
+    })),
   };
 }
 
@@ -257,6 +315,7 @@ export type CreateWebServerInput = {
   software?: unknown;
   version?: unknown;
   startNow?: unknown;
+  nodeId?: unknown;
 };
 
 export async function createWebServer(input: CreateWebServerInput, scope: OwnerScope) {
@@ -268,6 +327,20 @@ export async function createWebServer(input: CreateWebServerInput, scope: OwnerS
   const version = String(input.version ?? "");
   const versions = playableVersions((await sandboxVersions())[software] ?? []);
   if (!versions.includes(version)) throw new SandboxError("INVALID_VERSION", "That Minecraft version is not available.");
+
+  const requestedNode = String(input.nodeId ?? "").trim();
+  const node = nodeFor(requestedNode || undefined);
+  if (requestedNode === HOMELAB_NODE_ID && !node.available) {
+    throw new SandboxError(
+      "HOMELAB_OFFLINE",
+      "AD15 is offline right now. Use EX44 for now.",
+      503,
+    );
+  }
+  // Only accept known node ids — unknown values fall back to the default host.
+  if (requestedNode && node.id !== requestedNode) {
+    throw new SandboxError("INVALID_NODE", "Pick a valid host.", 400);
+  }
 
   const created = await createSandbox(
     {
@@ -284,6 +357,7 @@ export async function createWebServer(input: CreateWebServerInput, scope: OwnerS
       simulationDistance: tier.simulationDistance,
       motd: `${displayName} · Aetherion`.slice(0, 60),
       startAfterCreate: false,
+      nodeId: node.id,
     },
     scope,
   );
@@ -474,7 +548,16 @@ async function sweepIdle() {
       continue;
     }
     const ping = await pingSandbox(row);
-    if (!ping || ping.online > 0 || pending.has(row.id)) {
+    let online = ping?.online ?? 0;
+    if (!ping && nodeFor(row.nodeId).id === HOMELAB_NODE_ID) {
+      try {
+        online = (await cachedStats(row.id)).online;
+      } catch {
+        online = 0;
+      }
+    }
+    // No Minecraft probe answer yet (cold boot / remote) — do not start the idle clock.
+    if ((!ping && nodeFor(row.nodeId).id !== HOMELAB_NODE_ID) || online > 0 || pending.has(row.id)) {
       idleSince.delete(row.id);
       continue;
     }

@@ -1,5 +1,7 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { Agent, fetch as undiciFetch, Headers, type RequestInit, type Response } from "undici";
 import { CRAFTY_CA_CERT } from "./craftyCa";
+import { HOMELAB_NODE_ID } from "./nodes";
 import path from "node:path";
 
 type CraftyEnvelope<T> = {
@@ -65,28 +67,53 @@ export type CraftyFileEntry = {
   modifiedAt: string | null;
 };
 
-let cachedToken: { value: string; expiresAt: number } | null = null;
+type CraftyTarget = "default" | "ad15";
+const craftyTarget = new AsyncLocalStorage<CraftyTarget>();
+
+/** Route Crafty calls to AD15 when `nodeId` is the HomeLab node. */
+export function withCraftyNode<T>(nodeId: string | undefined, fn: () => Promise<T>): Promise<T> {
+  const target: CraftyTarget = nodeId === HOMELAB_NODE_ID ? "ad15" : "default";
+  return craftyTarget.run(target, fn);
+}
+
+function activeTarget(): CraftyTarget {
+  return craftyTarget.getStore() ?? "default";
+}
+
+const tokenCache = new Map<CraftyTarget, { value: string; expiresAt: number }>();
+
 const craftyTlsAgent = new Agent({
   connect: {
     ca: CRAFTY_CA_CERT,
-    // The controller is reached by IP, while its pinned certificate is issued
-    // to the local Crafty hostname. Keep hostname verification enabled against
-    // that certificate identity instead of disabling TLS validation.
     servername: process.env.CRAFTY_TLS_SERVER_NAME ?? "aetherion",
+  },
+});
+
+/** AD15 Crafty uses its own self-signed cert (not the Hetzner CA). */
+const ad15TlsAgent = new Agent({
+  connect: {
+    rejectUnauthorized: false,
+    servername: process.env.CRAFTY_AD15_TLS_SERVER_NAME?.trim() || undefined,
   },
 });
 
 const CRAFTY_TIMEOUT_MS = 30_000;
 
-function fetchCrafty(path: string, init: RequestInit = {}) {
-  return undiciFetch(`${baseUrl()}${path}`, {
+function fetchCrafty(reqPath: string, init: RequestInit = {}) {
+  const target = activeTarget();
+  return undiciFetch(`${baseUrl()}${reqPath}`, {
     ...init,
     signal: init.signal ?? AbortSignal.timeout(CRAFTY_TIMEOUT_MS),
-    dispatcher: craftyTlsAgent,
+    dispatcher: target === "ad15" ? ad15TlsAgent : craftyTlsAgent,
   });
 }
 
 function baseUrl() {
+  if (activeTarget() === "ad15") {
+    const value = process.env.CRAFTY_AD15_BASE_URL?.replace(/\/+$/, "");
+    if (!value) throw new Error("CRAFTY_AD15_BASE_URL is not configured.");
+    return value;
+  }
   const value = process.env.CRAFTY_BASE_URL?.replace(/\/+$/, "");
   if (!value) throw new Error("CRAFTY_BASE_URL is not configured.");
   return value;
@@ -100,19 +127,40 @@ async function parse<T>(response: Response): Promise<T> {
   return (body.data ?? body) as T;
 }
 
-async function getToken() {
-  if (cachedToken && cachedToken.expiresAt > Date.now()) return cachedToken.value;
+function passwordCredsFor(target: CraftyTarget) {
+  if (target === "ad15") {
+    return {
+      username: process.env.CRAFTY_AD15_USERNAME?.trim() || process.env.CRAFTY_USERNAME?.trim(),
+      password: process.env.CRAFTY_AD15_PASSWORD?.trim() || process.env.CRAFTY_PASSWORD?.trim(),
+    };
+  }
+  return {
+    username: process.env.CRAFTY_USERNAME?.trim(),
+    password: process.env.CRAFTY_PASSWORD?.trim(),
+  };
+}
 
-  // Prefer a long-lived Crafty API key (Bearer JWT). Password login often breaks
-  // after the admin password is rotated away from default-creds.txt.
-  const apiToken = process.env.CRAFTY_API_TOKEN?.trim();
-  if (apiToken) {
-    cachedToken = { value: apiToken, expiresAt: Date.now() + 24 * 60 * 60 * 1000 };
-    return apiToken;
+async function getToken() {
+  const target = activeTarget();
+  const cached = tokenCache.get(target);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+  // Hetzner: prefer static API token. AD15: prefer password login (fresh JWT with full rights).
+  if (target === "default") {
+    const apiToken = process.env.CRAFTY_API_TOKEN?.trim();
+    if (apiToken) {
+      tokenCache.set(target, { value: apiToken, expiresAt: Date.now() + 24 * 60 * 60 * 1000 });
+      return apiToken;
+    }
+  } else {
+    const ad15Token = process.env.CRAFTY_AD15_API_TOKEN?.trim();
+    if (ad15Token) {
+      tokenCache.set(target, { value: ad15Token, expiresAt: Date.now() + 24 * 60 * 60 * 1000 });
+      return ad15Token;
+    }
   }
 
-  const username = process.env.CRAFTY_USERNAME;
-  const password = process.env.CRAFTY_PASSWORD;
+  const { username, password } = passwordCredsFor(target);
   if (!username || !password) {
     throw new Error("Crafty credentials are not configured (set CRAFTY_API_TOKEN or username/password).");
   }
@@ -123,30 +171,41 @@ async function getToken() {
     body: JSON.stringify({ username, password }),
   });
   const data = await parse<{ token: string }>(response);
-  cachedToken = { value: data.token, expiresAt: Date.now() + 8 * 60 * 1000 };
+  tokenCache.set(target, { value: data.token, expiresAt: Date.now() + 8 * 60 * 1000 });
   return data.token;
 }
 
-export async function craftyRequest<T>(path: string, init: RequestInit = {}) {
+export async function craftyRequest<T>(reqPath: string, init: RequestInit = {}) {
+  const target = activeTarget();
   const token = await getToken();
   const headers = new Headers(init.headers);
   headers.set("accept", "application/json");
   headers.set("authorization", `Bearer ${token}`);
   if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
 
-  let response = await fetchCrafty(path, { ...init, headers });
-  if ((response.status === 401 || response.status === 403) && !process.env.CRAFTY_API_TOKEN?.trim()) {
-    cachedToken = null;
+  let response = await fetchCrafty(reqPath, { ...init, headers });
+  const hasStaticToken =
+    target === "ad15"
+      ? Boolean(process.env.CRAFTY_AD15_API_TOKEN?.trim())
+      : Boolean(process.env.CRAFTY_API_TOKEN?.trim());
+  if ((response.status === 401 || response.status === 403) && !hasStaticToken) {
+    tokenCache.delete(target);
     const retryToken = await getToken();
     headers.set("authorization", `Bearer ${retryToken}`);
-    response = await fetchCrafty(path, { ...init, headers });
+    response = await fetchCrafty(reqPath, { ...init, headers });
   }
   return parse<T>(response);
 }
 
 function normalize(record: CraftyServerRecord): CraftyServer {
   const rawIp = record.server_ip ?? "127.0.0.1";
-  const publicIp = process.env.PUBLIC_HOST_IP?.trim() || process.env.DEDICATED_HOST_IP?.trim() || "135.181.18.162";
+  const publicIp =
+    activeTarget() === "ad15"
+      ? process.env.AD15_PUBLIC_HOST?.trim() ||
+        process.env.AD15_PUBLIC_IP?.trim() ||
+        process.env.AD15_HOST?.trim() ||
+        "192.168.178.117"
+      : process.env.PUBLIC_HOST_IP?.trim() || process.env.DEDICATED_HOST_IP?.trim() || "135.181.18.162";
   return {
     id: record.server_id ?? record.server_uuid ?? "",
     name: record.server_name ?? "Unnamed server",

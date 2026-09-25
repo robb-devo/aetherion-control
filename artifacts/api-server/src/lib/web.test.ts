@@ -21,6 +21,7 @@ import {
   RAM_TIERS,
   cleanServerName,
   craftySlugFor,
+  cpuOfAllocated,
   deriveStatus,
   playableVersions,
   tierFor,
@@ -84,11 +85,12 @@ test("website owners are namespaced apart from launcher Microsoft ids", () => {
   assert.equal(scope.includeUnowned, false);
 });
 
-test("RAM tiers start at 512 MB and stay inside the playground range", () => {
+test("RAM tiers include the potato challenge and stay inside the playground range", () => {
   assert.deepEqual(
     RAM_TIERS.map((tier) => tier.ramMb),
-    [512, 768, 1024, 1536, 2048],
+    [128, 512, 768, 1024, 1536, 2048],
   );
+  assert.equal(tierFor(128)?.rarity, "crysis");
   assert.equal(tierFor(256), undefined);
   assert.equal(tierFor(1024)?.rarity, "rare");
   for (const tier of RAM_TIERS) assert.ok(tier.cpuCores >= 1 && tier.cpuCores <= 2);
@@ -102,6 +104,12 @@ test("JVM flags keep launcher GB servers unchanged and support MB tiers", () => 
   assert.match(buildJavaCommand("paper.jar", 2048, 1), /-Xms1G -Xmx2G /);
   assert.match(buildJavaCommand("paper.jar", 1024, 1), /-Xms1G -Xmx1G /);
   assert.match(buildJavaCommand("paper.jar", 512, 1), /-Xms256M -Xmx512M /);
+  const potato = buildJavaCommand("paper.jar", 128, 1);
+  assert.match(potato, /-Xms64M -Xmx128M /);
+  assert.match(potato, /-XX:ActiveProcessorCount=1/);
+  assert.match(potato, /-XX:ParallelGCThreads=1/);
+  assert.match(potato, /-XX:CICompilerCount=1/);
+  assert.match(potato, /-XX:TieredStopAtLevel=1/);
   assert.match(buildJavaCommand("paper.jar", 1536, 2), /-Xms1G -Xmx1536M /);
 });
 
@@ -144,10 +152,17 @@ test("status derivation covers every lifecycle phase", () => {
   assert.equal(deriveStatus({ running: false, pingable: false }), "offline");
   assert.equal(deriveStatus({ running: false, pingable: false, pending: { action: "start" } }), "starting");
   assert.equal(deriveStatus({ running: true, pingable: false }), "starting");
+  assert.equal(deriveStatus({ running: true, pingable: false, trustRunning: true }), "online");
   assert.equal(deriveStatus({ running: true, pingable: true }), "online");
   assert.equal(deriveStatus({ running: true, pingable: true, pending: { action: "stop" } }), "stopping");
   assert.equal(deriveStatus({ running: true, pingable: false, pending: { action: "restart" } }), "restarting");
   assert.equal(deriveStatus({ running: false, pingable: false, pending: { action: "restart" } }), "restarting");
+});
+
+test("CPU of allocated cores scales host-wide Crafty percent", () => {
+  assert.equal(cpuOfAllocated(12.5, 1, 8), 100);
+  assert.equal(cpuOfAllocated(25, 2, 8), 100);
+  assert.equal(cpuOfAllocated(1, 1, 8), 8);
 });
 
 function varInt(value: number) {
@@ -299,7 +314,7 @@ test("web API: cookie sessions, CSRF guard and per-user isolation", async () => 
       const badTier = await call(base, "/servers", {
         method: "POST",
         cookie,
-        body: { name: "Tiny", ramMb: 256, software: "paper", version: "1.21.1" },
+        body: { name: "Tiny", ramMb: 128, software: "paper", version: "1.21.1" },
       });
       assert.equal(badTier.status, 400);
       assert.equal(badTier.body.code, "INVALID_TIER");

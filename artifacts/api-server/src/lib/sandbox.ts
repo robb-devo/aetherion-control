@@ -12,10 +12,11 @@ import {
   getCraftyStats,
   normalizeServerPath,
   sendCraftyCommand,
+  withCraftyNode,
   type CraftyServer,
   type CraftyStats,
 } from "./crafty";
-import { nodeFor } from "./nodes";
+import { HOMELAB_NODE_ID, nodeFor } from "./nodes";
 import { findServerProcess, invalidateProbe } from "./serverProbe";
 import { findOwned, omitOwner, visibleToOwner, type OwnerScope } from "./sandboxOwners.mjs";
 
@@ -100,7 +101,8 @@ const MAX_CORES = Number(process.env.SANDBOX_MAX_CORES || 4);
 const PORT_START = Number(process.env.SANDBOX_PORT_START || 25600);
 const PORT_END = Number(process.env.SANDBOX_PORT_END || 25649);
 const PUBLIC_IP = process.env.PUBLIC_HOST_IP?.trim() || process.env.DEDICATED_HOST_IP?.trim() || "135.181.18.162";
-export const MIN_SANDBOX_RAM_MB = 512;
+/** Potato tier (“Can it run Minecraft?”) — 128 MB heap on purpose. */
+export const MIN_SANDBOX_RAM_MB = 128;
 
 const allowedTypes = new Set<SandboxType>(["vanilla", "paper", "fabric", "purpur"]);
 const allowedDiff = new Set<SandboxDifficulty>(["peaceful", "easy", "normal", "hard"]);
@@ -192,28 +194,35 @@ const CRAFTY_LIST_TTL_MS = 10_000;
 const STATS_TTL_MS = 5_000;
 const START_RESERVATION_MS = 120_000;
 
-let craftyListCache: { at: number; servers: CraftyServer[] } | null = null;
+let craftyListCache = new Map<string, { at: number; servers: CraftyServer[] }>();
 const statsCache = new Map<string, { at: number; stats: CraftyStats }>();
 const startReservations = new Map<string, number>();
 
-async function craftyServers(force = false) {
-  if (!force && craftyListCache && Date.now() - craftyListCache.at < CRAFTY_LIST_TTL_MS) {
-    return craftyListCache.servers;
+function nodeIdForSandbox(id: string) {
+  return loadStore().find((row) => row.id === id)?.nodeId;
+}
+
+async function craftyServers(nodeId?: string, force = false) {
+  const key = nodeFor(nodeId).id;
+  const hit = craftyListCache.get(key);
+  if (!force && hit && Date.now() - hit.at < CRAFTY_LIST_TTL_MS) {
+    return hit.servers;
   }
-  const servers = await listCraftyServers();
-  craftyListCache = { at: Date.now(), servers };
+  const servers = await withCraftyNode(nodeId, () => listCraftyServers());
+  craftyListCache.set(key, { at: Date.now(), servers });
   return servers;
 }
 
-export async function craftyServerFor(id: string) {
-  const servers = await craftyServers();
-  return servers.find((server) => server.id === id) ?? (await craftyServers(true)).find((server) => server.id === id);
+export async function craftyServerFor(id: string, nodeId?: string) {
+  const resolved = nodeId ?? nodeIdForSandbox(id);
+  const servers = await craftyServers(resolved);
+  return servers.find((server) => server.id === id) ?? (await craftyServers(resolved, true)).find((server) => server.id === id);
 }
 
 export async function cachedStats(id: string) {
   const hit = statsCache.get(id);
   if (hit && Date.now() - hit.at < STATS_TTL_MS) return hit.stats;
-  const stats = await getCraftyStats(id);
+  const stats = await withCraftyNode(nodeIdForSandbox(id), () => getCraftyStats(id));
   statsCache.set(id, { at: Date.now(), stats });
   return stats;
 }
@@ -232,8 +241,16 @@ function releaseReservation(id: string) {
   startReservations.delete(id);
 }
 
-/** Process table first (real time); Crafty stats only where the probe cannot answer. */
-export async function sandboxProcess(row: Pick<SandboxRecord, "id">) {
+/** Hetzner: local process table. AD15: Crafty stats over the tunnel. */
+export async function sandboxProcess(row: Pick<SandboxRecord, "id" | "nodeId">) {
+  const nodeId = row.nodeId ?? nodeIdForSandbox(row.id);
+  if (nodeFor(nodeId).id === HOMELAB_NODE_ID) {
+    try {
+      return { running: (await cachedStats(row.id)).running, process: undefined };
+    } catch {
+      return { running: false, process: undefined };
+    }
+  }
   let server: CraftyServer | undefined;
   try {
     server = await craftyServerFor(row.id);
@@ -403,18 +420,28 @@ function heapFlag(mb: number) {
 export function buildJavaCommand(executable: string, ramMb: number, cpuCores: number) {
   // Keep the launch line compact — Crafty + Java 25 choke on mega Aikar strings for fresh jars.
   const xmsMb = ramMb >= 1024 ? Math.min(ramMb, Math.max(1024, Math.floor(ramMb / 2048) * 1024)) : Math.floor(ramMb / 2);
-  return [
+  const cores = Math.max(1, Math.floor(cpuCores));
+  const flags = [
     "java",
     `-Xms${heapFlag(xmsMb)}`,
     `-Xmx${heapFlag(ramMb)}`,
-    `-XX:ActiveProcessorCount=${cpuCores}`,
+    // Pin the JVM's idea of "how many CPUs exist" so GC/compiler stay on that slice.
+    `-XX:ActiveProcessorCount=${cores}`,
     "-XX:+UseG1GC",
     "-XX:+ParallelRefProcEnabled",
     "-XX:MaxGCPauseMillis=200",
-    "-jar",
-    executable || "server.jar",
-    "nogui",
-  ].join(" ");
+  ];
+  // Crysis / potato: one hardware thread (ActiveProcessorCount=1) + stingiest GC/compiler.
+  if (ramMb <= 128) {
+    flags.push(
+      "-XX:ParallelGCThreads=1",
+      "-XX:ConcGCThreads=1",
+      "-XX:CICompilerCount=1",
+      "-XX:TieredStopAtLevel=1",
+    );
+  }
+  flags.push("-jar", executable || "server.jar", "nogui");
+  return flags.join(" ");
 }
 
 export function patchProperties(raw: string, patch: Record<string, string>) {
@@ -564,14 +591,14 @@ export async function createSandbox(input: SandboxCreateInput, scope: OwnerScope
   }
 
   const maxPlayers = Math.max(1, Math.min(40, Number(input.maxPlayers ?? 12)));
-  const viewDistance = Math.max(4, Math.min(16, Number(input.viewDistance ?? 8)));
-  const simulationDistance = Math.max(3, Math.min(12, Number(input.simulationDistance ?? 6)));
+  const viewDistance = Math.max(2, Math.min(16, Number(input.viewDistance ?? 8)));
+  const simulationDistance = Math.max(2, Math.min(12, Number(input.simulationDistance ?? 6)));
   const difficulty = (input.difficulty || "normal") as SandboxDifficulty;
   const gamemode = (input.gamemode || "survival") as SandboxGamemode;
   const onlineMode = input.onlineMode !== false;
   const motd = String(input.motd || "AETHERION Sandbox").slice(0, 60);
   const startAfterCreate = input.startAfterCreate !== false;
-  const node = nodeFor(undefined);
+  const node = nodeFor(input.nodeId);
 
   if (!allowedTypes.has(serverType)) throw new Error("Unsupported server type.");
   if (!version) throw new Error("Version is required.");
@@ -584,6 +611,7 @@ export async function createSandbox(input: SandboxCreateInput, scope: OwnerScope
   if (loadStore().some((row) => row.name === name)) throw new Error("A sandbox with this name already exists.");
   if (startAfterCreate) assertPoolFits(await runningSandboxes(), { ramMb, cpuCores, nodeId: node.id });
 
+  return withCraftyNode(node.id, async () => {
   const versions = await sandboxVersions();
   if (!versions[serverType]?.includes(version)) {
     throw new Error(`Version ${version} is not available for ${serverType}.`);
@@ -631,7 +659,7 @@ export async function createSandbox(input: SandboxCreateInput, scope: OwnerScope
 
   // Tune JVM + world settings after Crafty finishes scaffolding.
   try {
-    const createdServer = await craftyServerFor(id);
+    const createdServer = await craftyServerFor(id, node.id);
     executable = createdServer?.executable || "server.jar";
     await craftyRequest(`/api/v2/servers/${encodeURIComponent(id)}`, {
       method: "PATCH",
@@ -678,7 +706,7 @@ export async function createSandbox(input: SandboxCreateInput, scope: OwnerScope
     console.warn("sandbox properties patch failed", error);
   }
 
-  await openFirewall(port);
+  if (node.id !== HOMELAB_NODE_ID) await openFirewall(port);
 
   const record: SandboxRecord = {
     id,
@@ -725,40 +753,44 @@ export async function createSandbox(input: SandboxCreateInput, scope: OwnerScope
   }
 
   return publicSandbox(record);
+  });
 }
 
 export async function deleteSandbox(id: string, scope: OwnerScope) {
   const target = findOwned(loadStore(), id, scope);
   if (!target) throw new Error("Sandbox not found.");
 
-  if (await isSandboxRunning(target)) {
-    try {
-      await requestStop(id);
-    } catch {
-      // the settle wait below still guards the delete
+  return withCraftyNode(target.nodeId, async () => {
+    if (await isSandboxRunning(target)) {
+      try {
+        await requestStop(id);
+      } catch {
+        // the settle wait below still guards the delete
+      }
     }
-  }
-  await waitForStopToSettle(target);
-  try {
-    await craftyRequest(`/api/v2/servers/${encodeURIComponent(id)}?files=true`, { method: "DELETE" });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!/404|not found|invalid/i.test(message)) throw error;
-  }
+    await waitForStopToSettle(target);
+    try {
+      await craftyRequest(`/api/v2/servers/${encodeURIComponent(id)}?files=true`, { method: "DELETE" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/404|not found|invalid|permission/i.test(message)) throw error;
+    }
 
-  await closeFirewall(target.port);
-  releaseReservation(id);
-  statsCache.delete(id);
-  craftyListCache = null;
-  mutateStore((rows) => rows.filter((row) => row.id !== id));
-  return { ok: true, id };
+    if (nodeFor(target.nodeId).id !== HOMELAB_NODE_ID) await closeFirewall(target.port);
+    releaseReservation(id);
+    statsCache.delete(id);
+    craftyListCache.delete(nodeFor(target.nodeId).id);
+    mutateStore((rows) => rows.filter((row) => row.id !== id));
+    return { ok: true, id };
+  });
 }
 
 /** True once Crafty has finished downloading the server jar. */
 export async function waitForSandboxJar(id: string, executable: string, attempts = 40) {
+  const nodeId = nodeIdForSandbox(id);
   for (let i = 0; i < attempts; i += 1) {
     try {
-      const listing = await getCraftyFiles(id, ".");
+      const listing = await withCraftyNode(nodeId, () => getCraftyFiles(id, "."));
       // Fabric ships a ~180 KB launcher jar that fetches the server on first start.
       const found = (listing.entries ?? []).some(
         (entry) =>
@@ -822,29 +854,31 @@ export async function startSandbox(id: string, scope: OwnerScope, policy: StartP
 
   if (!alreadyRunning) {
     try {
-      try {
-        // Crafty only reads the FIRST line — comments after first Minecraft boot break starts.
-        await saveCraftyFile(id, "eula.txt", "eula=true\n");
-      } catch {
-        // ignore
-      }
+      await withCraftyNode(target.nodeId, async () => {
+        try {
+          // Crafty only reads the FIRST line — comments after first Minecraft boot break starts.
+          await saveCraftyFile(id, "eula.txt", "eula=true\n");
+        } catch {
+          // ignore
+        }
 
-      try {
-        // Crafty panel EULA gate — without this, start_server is a silent no-op.
-        await runCraftyAction(id, "eula");
-      } catch {
-        // ignore if already accepted
-      }
+        try {
+          // Crafty panel EULA gate — without this, start_server is a silent no-op.
+          await runCraftyAction(id, "eula");
+        } catch {
+          // ignore if already accepted
+        }
 
-      const createdServer = await craftyServerFor(id);
-      const executable = createdServer?.executable || "server.jar";
-      const ready = await waitForSandboxJar(id, executable, 10);
-      if (!ready) {
-        throw new SandboxError("NOT_READY", "Sandbox jar is not ready yet — wait a moment and try Start again.", 409);
-      }
+        const createdServer = await craftyServerFor(id, target.nodeId);
+        const executable = createdServer?.executable || "server.jar";
+        const ready = await waitForSandboxJar(id, executable, 10);
+        if (!ready) {
+          throw new SandboxError("NOT_READY", "Sandbox jar is not ready yet — wait a moment and try Start again.", 409);
+        }
 
-      await openFirewall(target.port);
-      await runCraftyAction(id, "start_server");
+        if (nodeFor(target.nodeId).id !== HOMELAB_NODE_ID) await openFirewall(target.port);
+        await runCraftyAction(id, "start_server");
+      });
     } catch (error) {
       releaseReservation(id);
       throw error;
@@ -854,15 +888,16 @@ export async function startSandbox(id: string, scope: OwnerScope, policy: StartP
 
   invalidateProbe();
   statsCache.delete(id);
+  const address = `${nodeFor(target.nodeId).publicHost}:${target.port}`;
   try {
     return {
       ok: true,
       id,
-      address: `${PUBLIC_IP}:${target.port}`,
+      address,
       running: await isSandboxRunning(target),
     };
   } catch {
-    return { ok: true, id, address: `${PUBLIC_IP}:${target.port}`, running: null as boolean | null };
+    return { ok: true, id, address, running: null as boolean | null };
   }
 }
 
@@ -870,21 +905,22 @@ export async function stopSandbox(id: string, scope: OwnerScope) {
   const target = findOwned(loadStore(), id, scope);
   if (!target) throw new Error("Sandbox not found.");
 
-  await requestStop(id);
+  await withCraftyNode(target.nodeId, () => requestStop(id));
   releaseReservation(id);
   await new Promise((resolve) => setTimeout(resolve, 1500));
 
   invalidateProbe();
   statsCache.delete(id);
+  const address = `${nodeFor(target.nodeId).publicHost}:${target.port}`;
   try {
     return {
       ok: true,
       id,
-      address: `${PUBLIC_IP}:${target.port}`,
+      address,
       running: await isSandboxRunning(target),
     };
   } catch {
-    return { ok: true, id, address: `${PUBLIC_IP}:${target.port}`, running: null as boolean | null };
+    return { ok: true, id, address, running: null as boolean | null };
   }
 }
 
@@ -893,7 +929,7 @@ export async function restartSandbox(id: string, scope: OwnerScope) {
   if (!(await isSandboxRunning(target))) {
     throw new SandboxError("NOT_RUNNING", "The server is not running.", 409);
   }
-  await runCraftyAction(id, "restart_server");
+  await withCraftyNode(target.nodeId, () => runCraftyAction(id, "restart_server"));
   recentStops.set(id, Date.now());
   statsCache.delete(id);
   return { ok: true, id };
@@ -911,8 +947,8 @@ export function cleanLogLine(line: string) {
 }
 
 export async function readSandboxLogs(id: string, scope: OwnerScope, limit = 300) {
-  getOwnedSandbox(id, scope);
-  const lines = await getCraftyLogs(id);
+  const target = getOwnedSandbox(id, scope);
+  const lines = await withCraftyNode(target.nodeId, () => getCraftyLogs(id));
   return lines.slice(-limit).map(cleanLogLine);
 }
 
@@ -925,7 +961,7 @@ export async function sendSandboxCommand(id: string, scope: OwnerScope, command:
   if (!(await isSandboxRunning(target))) {
     throw new SandboxError("NOT_RUNNING", "Start the server before sending commands.", 409);
   }
-  await sendCraftyCommand(id, trimmed);
+  await withCraftyNode(target.nodeId, () => sendCraftyCommand(id, trimmed));
   return { ok: true as const };
 }
 
@@ -997,7 +1033,7 @@ export async function updateSandbox(id: string, scope: OwnerScope, patch: Sandbo
     next.ramMb = ramMb;
     next.ramGb = ramMb / 1024;
     next.cpuCores = cpuCores;
-    craftyListCache = null;
+    craftyListCache.delete(nodeFor(target.nodeId).id);
   }
 
   if (Object.keys(properties).length) {
