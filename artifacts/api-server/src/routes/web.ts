@@ -1,7 +1,8 @@
 import cookieParser from "cookie-parser";
 import { Router, type IRouter, type NextFunction, type Request, type Response } from "express";
 import { SandboxError } from "../lib/sandbox";
-import { installAddon, listAddons, removeAddon } from "../lib/webAddons";
+import { installAddon, listAddons, removeAddon, uploadAddon } from "../lib/webAddons";
+import { listWebFiles } from "../lib/webFiles";
 import {
   AccountError,
   RateLimiter,
@@ -21,6 +22,7 @@ import {
   getWebServer,
   listWebServers,
   networkStatus,
+  vanillaStatus,
   restartWebServer,
   startWebServer,
   stopWebServer,
@@ -156,6 +158,11 @@ router.get(
 );
 
 router.get(
+  "/web/vanilla",
+  handle(async () => vanillaStatus()),
+);
+
+router.get(
   "/web/options",
   handle(async () => webOptions()),
 );
@@ -264,11 +271,31 @@ router.post(
   handle(async (req, res) => installAddon(String(req.params.id), scopeForWebUser(currentUser(res)), req.body?.versionId), 201),
 );
 
+router.post(
+  "/web/servers/:id/addons/upload",
+  requireUser,
+  throttleActions,
+  handle(
+    async (req, res) =>
+      uploadAddon(String(req.params.id), scopeForWebUser(currentUser(res)), {
+        fileName: req.body?.fileName,
+        data: req.body?.data,
+      }),
+    201,
+  ),
+);
+
 router.delete(
   "/web/servers/:id/addons/:file",
   requireUser,
   throttleActions,
   handle(async (req, res) => removeAddon(String(req.params.id), scopeForWebUser(currentUser(res)), req.params.file)),
+);
+
+router.get(
+  "/web/servers/:id/files",
+  requireUser,
+  handle(async (req, res) => listWebFiles(String(req.params.id), scopeForWebUser(currentUser(res)), req.query.path)),
 );
 
 router.get(

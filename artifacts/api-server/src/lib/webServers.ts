@@ -523,6 +523,40 @@ export async function networkStatus() {
   return value;
 }
 
+const VANILLA_TTL_MS = 15_000;
+let vanillaCache: {
+  at: number;
+  value: {
+    online: boolean;
+    players: number;
+    maxPlayers: number;
+    version: string;
+    motd: string;
+    address: string;
+    port: number;
+  };
+} | null = null;
+
+/** Standalone vanilla Java (not on Velocity). Server-list ping from this host. */
+export async function vanillaStatus() {
+  if (vanillaCache && Date.now() - vanillaCache.at < VANILLA_TTL_MS) return vanillaCache.value;
+  const host = process.env.VANILLA_PING_HOST?.trim() || "135.181.18.162";
+  const port = Number(process.env.VANILLA_PING_PORT || 25571);
+  const protocol = Number(process.env.VANILLA_PING_PROTOCOL || 802);
+  const ping = await pingMinecraft(host, port, 2000, protocol);
+  const value = {
+    online: Boolean(ping),
+    players: ping?.online ?? 0,
+    maxPlayers: ping?.max ?? 0,
+    version: ping?.version ?? "",
+    motd: ping?.motd ?? "",
+    address: host,
+    port,
+  };
+  vanillaCache = { at: Date.now(), value };
+  return value;
+}
+
 let maintenanceTimer: NodeJS.Timeout | null = null;
 
 /**

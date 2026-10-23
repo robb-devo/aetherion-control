@@ -179,7 +179,12 @@ export function parseStatusResponse(data: unknown, latencyMs: number): ServerPin
 }
 
 /** Minecraft Server List Ping. Resolves null when nothing answers in time. */
-export function pingMinecraft(host: string, port: number, timeoutMs = 1500): Promise<ServerPing | null> {
+export function pingMinecraft(
+  host: string,
+  port: number,
+  timeoutMs = 1500,
+  protocolVersion = 767,
+): Promise<ServerPing | null> {
   return new Promise((resolve) => {
     const started = Date.now();
     const socket = net.createConnection({ host, port });
@@ -197,7 +202,7 @@ export function pingMinecraft(host: string, port: number, timeoutMs = 1500): Pro
     socket.on("connect", () => {
       const portBytes = Buffer.alloc(2);
       portBytes.writeUInt16BE(port);
-      const handshake = frame(0x00, Buffer.concat([varInt(767), mcString(host), portBytes, varInt(1)]));
+      const handshake = frame(0x00, Buffer.concat([varInt(protocolVersion), mcString(host), portBytes, varInt(1)]));
       socket.write(Buffer.concat([handshake, frame(0x00, Buffer.alloc(0))]));
     });
     socket.on("data", (chunk: Buffer) => {
